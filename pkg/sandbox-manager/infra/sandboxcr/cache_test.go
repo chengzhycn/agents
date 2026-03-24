@@ -631,7 +631,7 @@ func TestCache_InformerWithFilter_GetSandboxSet(t *testing.T) {
 					require.NoError(t, err, "failed to create SandboxSet %s/%s", sbs.Namespace, sbs.Name)
 				}
 			}
-			defer c.Stop()
+			defer c.Stop(t.Context())
 
 			// Wait for informer sync
 			time.Sleep(300 * time.Millisecond)

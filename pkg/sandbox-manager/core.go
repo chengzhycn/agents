@@ -3,7 +3,6 @@ package sandbox_manager
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 
 	"github.com/google/uuid"
@@ -13,6 +12,7 @@ import (
 	"github.com/openkruise/agents/pkg/sandbox-manager/config"
 	"github.com/openkruise/agents/pkg/sandbox-manager/infra"
 	"github.com/openkruise/agents/pkg/sandbox-manager/infra/sandboxcr"
+	"github.com/openkruise/agents/pkg/utils"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 )
@@ -57,21 +57,6 @@ func NewSandboxManager(client *clients.ClientSet, adapter proxy.RequestAdapter, 
 	return m, err
 }
 
-func getFirstNonLoopbackIP() string {
-	addresses, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
-	}
-	for _, addr := range addresses {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
-			}
-		}
-	}
-	return ""
-}
-
 func (m *SandboxManager) Run(ctx context.Context, sysNs, peerSelector string) error {
 	log := klog.FromContext(ctx)
 
@@ -86,7 +71,7 @@ func (m *SandboxManager) Run(ctx context.Context, sysNs, peerSelector string) er
 	// Get pod IP for memberlist binding
 	podIP := os.Getenv("POD_IP")
 	if podIP == "" {
-		podIP = getFirstNonLoopbackIP()
+		podIP = utils.GetFirstNonLoopbackIP()
 	}
 	if podIP == "" {
 		return fmt.Errorf("failed to determine local IP for memberlist")
