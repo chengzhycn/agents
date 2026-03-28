@@ -28,8 +28,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	agentsv1alpha1 "github.com/openkruise/agents/api/v1alpha1"
-	"github.com/openkruise/agents/pkg/proxy"
 	"github.com/openkruise/agents/pkg/sandbox-gateway/registry"
+	proxyutils "github.com/openkruise/agents/pkg/utils/sandbox-manager/proxyutils"
 )
 
 // SandboxReconciler reconciles Sandbox objects and updates the local registry
@@ -58,20 +58,9 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	podIP := sandbox.Status.PodInfo.PodIP
-	if podIP == "" {
-		logger.V(1).Info("sandbox has no pod IP yet, skipping", "key", key)
-		return ctrl.Result{}, nil
-	}
-
-	logger.Info("updating registry", "key", key, "podIP", podIP, "resourceVersion", sandbox.ResourceVersion)
-	registry.GetRegistry().Update(key, proxy.Route{
-		IP:    podIP,
-		ID:    key,
-		UID:   sandbox.UID,
-		Owner: sandbox.GetAnnotations()[agentsv1alpha1.AnnotationOwner],
-
-		ResourceVersion: sandbox.ResourceVersion})
+	route := proxyutils.DefaultGetRouteFunc(&sandbox)
+	logger.Info("updating registry", "key", key, "podIP", route.IP, "state", route.State, "resourceVersion", route.ResourceVersion)
+	registry.GetRegistry().Update(key, route)
 	return ctrl.Result{}, nil
 }
 

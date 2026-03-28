@@ -159,10 +159,16 @@ func TestSandboxReconciler_Reconcile_SandboxNoPodIP(t *testing.T) {
 		t.Error("Expected no requeue")
 	}
 
-	// Verify registry was not updated
-	_, found := registry.GetRegistry().Get("default--no-ip-sandbox")
-	if found {
-		t.Error("Expected registry to not be updated when sandbox has no pod IP")
+	// Verify registry was updated with state="creating" (consistent with sandbox-manager behavior)
+	route, found := registry.GetRegistry().Get("default--no-ip-sandbox")
+	if !found {
+		t.Error("Expected registry entry to be created with creating state")
+	}
+	if route.IP != "" {
+		t.Errorf("Expected empty IP, got %s", route.IP)
+	}
+	if route.State != agentsv1alpha1.SandboxStateCreating {
+		t.Errorf("Expected state %s, got %s", agentsv1alpha1.SandboxStateCreating, route.State)
 	}
 }
 
@@ -762,10 +768,16 @@ func TestSandboxReconciler_Reconcile_NilStatus(t *testing.T) {
 		t.Error("Expected no requeue")
 	}
 
-	// Verify registry was not updated (no pod IP)
-	_, found := registry.GetRegistry().Get("default--nil-status-sandbox")
-	if found {
-		t.Error("Expected registry to not be updated when sandbox has no status")
+	// Verify registry was updated with state="creating" (consistent with sandbox-manager behavior)
+	route, found := registry.GetRegistry().Get("default--nil-status-sandbox")
+	if !found {
+		t.Error("Expected registry entry to be created with creating state")
+	}
+	if route.IP != "" {
+		t.Errorf("Expected empty IP, got %s", route.IP)
+	}
+	if route.State != agentsv1alpha1.SandboxStateCreating {
+		t.Errorf("Expected state %s, got %s", agentsv1alpha1.SandboxStateCreating, route.State)
 	}
 }
 
