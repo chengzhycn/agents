@@ -445,7 +445,7 @@ func TestCache_GetConfigmap_FromSync(t *testing.T) {
 
 	cache, clientSet, err := NewTestCache(t)
 	require.NoError(t, err)
-	defer cache.Stop()
+	defer cache.Stop(t.Context())
 	k8sClient := clientSet.K8sClient
 
 	testConfigMap := &corev1.ConfigMap{
