@@ -17,16 +17,12 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const (
-	// MemberlistBindPort is the default port for memberlist gossip
-	MemberlistBindPort = 7946
-)
-
 type SandboxManager struct {
 	Namespace string
 
-	client       *clients.ClientSet
-	peersManager peers.Peers
+	client            *clients.ClientSet
+	peersManager      peers.Peers
+	memberlistBindPort int
 
 	infra infra.Infrastructure
 	proxy *proxy.Server
@@ -48,9 +44,10 @@ func NewSandboxManager(client *clients.ClientSet, adapter proxy.RequestAdapter, 
 	peersManager := peers.NewMemberlistPeers(nodeName)
 
 	m := &SandboxManager{
-		client:       client,
-		peersManager: peersManager,
-		proxy:        proxy.NewServer(adapter, peersManager, opts),
+		client:             client,
+		peersManager:       peersManager,
+		proxy:              proxy.NewServer(adapter, peersManager, opts),
+		memberlistBindPort: opts.MemberlistBindPort,
 	}
 	var err error
 	m.infra, err = sandboxcr.NewInfra(client, m.proxy, opts)
@@ -94,12 +91,12 @@ func (m *SandboxManager) Run(ctx context.Context, sysNs, peerSelector string) er
 			continue
 		}
 		// Memberlist uses the bind port for gossip
-		existingPeers = append(existingPeers, fmt.Sprintf("%s:%d", ip, MemberlistBindPort))
+		existingPeers = append(existingPeers, fmt.Sprintf("%s:%d", ip, m.memberlistBindPort))
 	}
 	log.Info("found existing peers for memberlist join", "count", len(existingPeers))
 
 	// Start memberlist
-	if err := m.peersManager.Start(ctx, podIP, MemberlistBindPort, existingPeers); err != nil {
+	if err := m.peersManager.Start(ctx, podIP, m.memberlistBindPort, existingPeers); err != nil {
 		return fmt.Errorf("failed to start memberlist: %w", err)
 	}
 	log.Info("memberlist started successfully")

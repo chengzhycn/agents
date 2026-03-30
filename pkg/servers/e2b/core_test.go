@@ -17,6 +17,7 @@ import (
 	agentsv1alpha1 "github.com/openkruise/agents/api/v1alpha1"
 	"github.com/openkruise/agents/client/clientset/versioned"
 	"github.com/openkruise/agents/pkg/sandbox-manager/clients"
+	"github.com/openkruise/agents/pkg/sandbox-manager/config"
 	"github.com/openkruise/agents/pkg/servers/e2b/keys"
 	"github.com/openkruise/agents/pkg/servers/e2b/models"
 	utils "github.com/openkruise/agents/pkg/utils/sandbox-manager"
@@ -87,7 +88,7 @@ func Setup(t *testing.T) (*Controller, *clients.ClientSet, func()) {
 	assert.NoError(t, err)
 
 	controller := NewController("example.com", InitKey, namespace, "", "", models.DefaultMaxTimeout, 10,
-		0, 0, TestServerPort, true, clientSet)
+		0, 0, TestServerPort, true, config.DefaultMemberlistBindPort, clientSet)
 	assert.NoError(t, controller.Init())
 	_, err = controller.Run(namespace, "component=sandbox-manager")
 	assert.NoError(t, err)

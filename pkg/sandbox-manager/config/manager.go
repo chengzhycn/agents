@@ -5,6 +5,11 @@ import (
 	"github.com/openkruise/agents/pkg/utils"
 )
 
+const (
+	// DefaultMemberlistBindPort is the default port for memberlist gossip
+	DefaultMemberlistBindPort = 7946
+)
+
 type SandboxManagerOptions struct {
 	SystemNamespace       string
 	SandboxNamespace      string
@@ -12,6 +17,7 @@ type SandboxManagerOptions struct {
 	MaxClaimWorkers       int
 	MaxCreateQPS          int
 	ExtProcMaxConcurrency uint32
+	MemberlistBindPort    int
 }
 
 func InitOptions(opts SandboxManagerOptions) SandboxManagerOptions {
@@ -26,6 +32,9 @@ func InitOptions(opts SandboxManagerOptions) SandboxManagerOptions {
 	}
 	if opts.MaxCreateQPS <= 0 {
 		opts.MaxCreateQPS = consts.DefaultCreateQPS
+	}
+	if opts.MemberlistBindPort <= 0 {
+		opts.MemberlistBindPort = DefaultMemberlistBindPort
 	}
 	return opts
 }

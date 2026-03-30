@@ -36,6 +36,7 @@ type Controller struct {
 	extProcMaxConcurrency uint32
 	sandboxLabelSelector  string
 	sandboxNamespace      string
+	memberlistBindPort    int
 
 	// fields
 	mux             *http.ServeMux
@@ -52,7 +53,7 @@ type Controller struct {
 
 // NewController creates a new E2B Controller
 func NewController(domain, adminKey string, sysNs, sandboxNamespace, sandboxLabelSelector string, maxTimeout, maxClaimWorkers, maxCreateQPS int, extProcMaxConcurrency uint32,
-	port int, enableAuth bool, clientSet *clients.ClientSet) *Controller {
+	port int, enableAuth bool, memberlistBindPort int, clientSet *clients.ClientSet) *Controller {
 	sc := &Controller{
 		mux:                   http.NewServeMux(),
 		client:                clientSet,
@@ -66,6 +67,7 @@ func NewController(domain, adminKey string, sysNs, sandboxNamespace, sandboxLabe
 		maxClaimWorkers:       maxClaimWorkers,
 		maxCreateQPS:          maxCreateQPS,
 		extProcMaxConcurrency: extProcMaxConcurrency,
+		memberlistBindPort:    memberlistBindPort,
 	}
 
 	sc.server = &http.Server{
@@ -97,6 +99,7 @@ func (sc *Controller) Init() error {
 		MaxClaimWorkers:       sc.maxClaimWorkers,
 		ExtProcMaxConcurrency: sc.extProcMaxConcurrency,
 		MaxCreateQPS:          sc.maxCreateQPS,
+		MemberlistBindPort:    sc.memberlistBindPort,
 	})
 	if err != nil {
 		return err

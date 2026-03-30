@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,26 +19,35 @@ import (
 	"github.com/openkruise/agents/pkg/proxy"
 	"github.com/openkruise/agents/pkg/sandbox-gateway/registry"
 	"github.com/openkruise/agents/pkg/sandbox-manager/consts"
+	"github.com/openkruise/agents/pkg/sandbox-manager/config"
 	"github.com/openkruise/agents/pkg/utils"
 )
 
 // Environment variable names for peer discovery
 const (
-	EnvNamespace     = "PEER_NAMESPACE"
-	EnvLabelSelector = "PEER_LABEL_SELECTOR"
+	EnvNamespace          = "PEER_NAMESPACE"
+	EnvLabelSelector      = "PEER_LABEL_SELECTOR"
+	EnvMemberlistBindPort = "MEMBERLIST_BIND_PORT"
 )
 
-const (
-	// MemberlistBindPort is the default port for memberlist gossip
-	MemberlistBindPort = 7946
-)
+// getMemberlistBindPort reads the memberlist bind port from environment variable
+// Returns the default port if not set or invalid
+func getMemberlistBindPort() int {
+	if val := os.Getenv(EnvMemberlistBindPort); val != "" {
+		if port, err := strconv.Atoi(val); err == nil && port > 0 {
+			return port
+		}
+	}
+	return config.DefaultMemberlistBindPort
+}
 
 // Server handles peer-to-peer communication for route synchronization
 type Server struct {
-	httpServer  *http.Server
-	peerManager *peers.MemberlistPeers
-	port        int
-	client      kubernetes.Interface
+	httpServer         *http.Server
+	peerManager        *peers.MemberlistPeers
+	port               int
+	memberlistBindPort int
+	client             kubernetes.Interface
 }
 
 // NewServer creates a new peer server
@@ -46,8 +56,9 @@ func NewServer(client kubernetes.Interface, port int) *Server {
 		port = proxy.SystemPort
 	}
 	return &Server{
-		port:   port,
-		client: client,
+		port:               port,
+		client:             client,
+		memberlistBindPort: getMemberlistBindPort(),
 	}
 }
 
@@ -98,7 +109,7 @@ func (s *Server) Start(ctx context.Context) error {
 				if ip == "" || ip == localIP {
 					continue
 				}
-				existingPeers = append(existingPeers, fmt.Sprintf("%s:%d", ip, MemberlistBindPort))
+				existingPeers = append(existingPeers, fmt.Sprintf("%s:%d", ip, s.memberlistBindPort))
 			}
 			log.Info("found existing peers for memberlist join", "count", len(existingPeers))
 		}
@@ -108,7 +119,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.peerManager = peers.NewMemberlistPeers(nodeName)
 
-	if err := s.peerManager.Start(ctx, localIP, MemberlistBindPort, existingPeers); err != nil {
+	if err := s.peerManager.Start(ctx, localIP, s.memberlistBindPort, existingPeers); err != nil {
 		return err
 	}
 
