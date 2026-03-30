@@ -325,7 +325,8 @@ func TestCache_GetPersistentVolume(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cache, k8sClient, _ := NewTestCache(t)
+			cache, k8sClient, err := NewTestCache(t)
+			require.NoError(t, err)
 			defer cache.Stop(t.Context())
 
 			if tt.setupPV != nil {
@@ -374,7 +375,8 @@ func TestCache_GetPersistentVolume(t *testing.T) {
 
 func TestCache_GetPersistentVolume_FromSync(t *testing.T) {
 	utils.InitLogOutput()
-	cache, k8sClient, _ := NewTestCache(t)
+	cache, k8sClient, err := NewTestCache(t)
+	require.NoError(t, err)
 	defer cache.Stop(t.Context())
 
 	testPV := &corev1.PersistentVolume{
@@ -395,7 +397,7 @@ func TestCache_GetPersistentVolume_FromSync(t *testing.T) {
 			},
 		},
 	}
-	_, err := k8sClient.CoreV1().PersistentVolumes().Create(context.TODO(), testPV, metav1.CreateOptions{})
+	_, err = k8sClient.CoreV1().PersistentVolumes().Create(context.TODO(), testPV, metav1.CreateOptions{})
 	assert.NoError(t, err)
 	// Wait for cache to be ready
 	time.Sleep(300 * time.Millisecond)
@@ -411,7 +413,8 @@ func TestCache_GetPersistentVolume_FromSync(t *testing.T) {
 func TestCache_GetSecret_FromSync(t *testing.T) {
 	sandboxManagerUtils.InitLogOutput()
 
-	cache, k8sClient, _ := NewTestCache(t)
+	cache, k8sClient, err := NewTestCache(t)
+	require.NoError(t, err)
 	defer cache.Stop(t.Context())
 
 	testSecret := &corev1.Secret{
@@ -426,7 +429,7 @@ func TestCache_GetSecret_FromSync(t *testing.T) {
 		Type: corev1.SecretTypeOpaque,
 	}
 	// Create the secret in the cluster using the client
-	_, err := k8sClient.CoreV1().Secrets(constantUtils.DefaultSandboxDeployNamespace).Create(context.TODO(), testSecret, metav1.CreateOptions{})
+	_, err = k8sClient.CoreV1().Secrets(constantUtils.DefaultSandboxDeployNamespace).Create(context.TODO(), testSecret, metav1.CreateOptions{})
 	assert.NoError(t, err)
 	// Wait for cache to be ready
 	time.Sleep(300 * time.Millisecond)

@@ -1,4 +1,4 @@
-package registry_test
+package registry
 
 import (
 	"strconv"
@@ -6,11 +6,10 @@ import (
 	"testing"
 
 	"github.com/openkruise/agents/pkg/proxy"
-	"github.com/openkruise/agents/pkg/sandbox-gateway/registry"
 )
 
 func TestGetUpdateDelete(t *testing.T) {
-	r := registry.GetRegistry()
+	r := GetRegistry()
 	defer r.Clear()
 
 	// Get missing key
@@ -57,7 +56,7 @@ func TestGetUpdateDelete(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
-	r := registry.GetRegistry()
+	r := GetRegistry()
 	defer r.Clear()
 
 	// First write should succeed
@@ -88,7 +87,7 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestList(t *testing.T) {
-	r := registry.GetRegistry()
+	r := GetRegistry()
 	defer r.Clear()
 
 	// Add routes
@@ -109,7 +108,7 @@ func TestList(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
-	r := registry.GetRegistry()
+	r := GetRegistry()
 	defer r.Clear()
 
 	var wg sync.WaitGroup

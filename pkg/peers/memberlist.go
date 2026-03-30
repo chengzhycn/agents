@@ -152,7 +152,7 @@ func (m *MemberlistPeers) GetPeers() []Peer {
 		return nil
 	}
 
-	peers := make([]Peer, 0)
+	peers := make([]Peer, 0, len(m.list.Members()))
 	for _, member := range m.list.Members() {
 		if member.Name == m.localName {
 			continue
