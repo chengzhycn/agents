@@ -20,8 +20,8 @@ import (
 type SandboxManager struct {
 	Namespace string
 
-	client            *clients.ClientSet
-	peersManager      peers.Peers
+	client             *clients.ClientSet
+	peersManager       peers.Peers
 	memberlistBindPort int
 
 	infra infra.Infrastructure
