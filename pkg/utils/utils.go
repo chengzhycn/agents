@@ -245,3 +245,11 @@ func GetFirstNonLoopbackIP() string {
 	}
 	return ""
 }
+
+func IsLoopbackIP(ip string) bool {
+	ipNet := net.ParseIP(ip)
+	if ipNet == nil {
+		return false
+	}
+	return ipNet.IsLoopback()
+}

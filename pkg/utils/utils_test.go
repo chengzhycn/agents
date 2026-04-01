@@ -1001,3 +1001,111 @@ func TestFilterOutCondition(t *testing.T) {
 		})
 	}
 }
+
+func TestIsLoopbackIP(t *testing.T) {
+	tests := []struct {
+		name     string
+		ip       string
+		expected bool
+	}{
+		// IPv4 loopback addresses
+		{
+			name:     "IPv4 loopback 127.0.0.1",
+			ip:       "127.0.0.1",
+			expected: true,
+		},
+		{
+			name:     "IPv4 loopback 127.0.0.2",
+			ip:       "127.0.0.2",
+			expected: true,
+		},
+		{
+			name:     "IPv4 loopback 127.255.255.255",
+			ip:       "127.255.255.255",
+			expected: true,
+		},
+		// IPv6 loopback address
+		{
+			name:     "IPv6 loopback ::1",
+			ip:       "::1",
+			expected: true,
+		},
+		{
+			name:     "IPv6 loopback expanded",
+			ip:       "0:0:0:0:0:0:0:1",
+			expected: true,
+		},
+		// Non-loopback IPv4 addresses
+		{
+			name:     "IPv4 non-loopback 192.168.1.1",
+			ip:       "192.168.1.1",
+			expected: false,
+		},
+		{
+			name:     "IPv4 non-loopback 10.0.0.1",
+			ip:       "10.0.0.1",
+			expected: false,
+		},
+		{
+			name:     "IPv4 non-loopback 172.16.0.1",
+			ip:       "172.16.0.1",
+			expected: false,
+		},
+		{
+			name:     "IPv4 non-loopback 8.8.8.8",
+			ip:       "8.8.8.8",
+			expected: false,
+		},
+		{
+			name:     "IPv4 non-loopback 0.0.0.0",
+			ip:       "0.0.0.0",
+			expected: false,
+		},
+		// Non-loopback IPv6 addresses
+		{
+			name:     "IPv6 non-loopback ::",
+			ip:       "::",
+			expected: false,
+		},
+		{
+			name:     "IPv6 non-loopback 2001:db8::1",
+			ip:       "2001:db8::1",
+			expected: false,
+		},
+		{
+			name:     "IPv6 non-loopback fe80::1",
+			ip:       "fe80::1",
+			expected: false,
+		},
+		// Invalid IP addresses
+		{
+			name:     "empty string",
+			ip:       "",
+			expected: false,
+		},
+		{
+			name:     "invalid IP format",
+			ip:       "invalid",
+			expected: false,
+		},
+		{
+			name:     "invalid IP with port",
+			ip:       "127.0.0.1:8080",
+			expected: false,
+		},
+		{
+			name:     "invalid IP out of range",
+			ip:       "256.0.0.1",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsLoopbackIP(tt.ip)
+			if result != tt.expected {
+				t.Errorf("IsLoopbackIP(%q) = %v, want %v", tt.ip, result, tt.expected)
+			}
+		})
+	}
+}

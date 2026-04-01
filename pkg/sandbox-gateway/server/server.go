@@ -109,7 +109,7 @@ func (s *Server) Start(ctx context.Context) error {
 		} else {
 			for _, peer := range peerList.Items {
 				ip := peer.Status.PodIP
-				if ip == "" || ip == localIP {
+				if ip == "" || ip == localIP || utils.IsLoopbackIP(ip) {
 					continue
 				}
 				existingPeers = append(existingPeers, fmt.Sprintf("%s:%d", ip, s.memberlistBindPort))

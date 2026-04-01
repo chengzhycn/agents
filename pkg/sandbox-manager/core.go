@@ -87,7 +87,7 @@ func (m *SandboxManager) Run(ctx context.Context, sysNs, peerSelector string) er
 	existingPeers := make([]string, 0)
 	for _, peer := range peerList.Items {
 		ip := peer.Status.PodIP
-		if ip == "" || ip == podIP {
+		if ip == "" || ip == podIP || utils.IsLoopbackIP(ip) {
 			continue
 		}
 		// Memberlist uses the bind port for gossip
