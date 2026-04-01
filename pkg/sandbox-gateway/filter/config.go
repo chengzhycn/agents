@@ -14,24 +14,18 @@ import (
 // Group 1: port (digits), Group 2: namespace--name (alphanumeric and hyphens)
 var hostPattern = regexp.MustCompile(`^(\d+)-([a-zA-Z0-9\-]+)\.`)
 
-// HeaderMatchPolicy defines how to extract the host key from the request
-type HeaderMatchPolicy string
-
 const (
-	// HeaderMatchPolicySandbox extracts sandbox ID directly from the specified header
-	HeaderMatchPolicySandbox HeaderMatchPolicy = "sandbox"
-	// HeaderMatchPolicyHost extracts the first label from the domain in the specified header
-	HeaderMatchPolicyHost HeaderMatchPolicy = "host"
+	DefaultHostHeaderName = "Host"
 )
 
 // Config holds the filter configuration
 type Config struct {
-	// HeaderMatchPolicy specifies how to extract the host key: "sandbox" or "host"
-	HeaderMatchPolicy HeaderMatchPolicy `json:"header-match-policy,omitempty"`
-	// HeaderMatchName is the name of the header to extract the host key from
-	HeaderMatchName string `json:"header-match-name,omitempty"`
-	// HeaderSandboxPort is the header name for sandbox port
-	HeaderSandboxPort string `json:"header-sandbox-port,omitempty"`
+	// SandboxHeaderName is the header name for sandbox ID (checked first)
+	SandboxHeaderName string `json:"sandbox-header-name,omitempty"`
+	// SandboxPortHeader is the header name for sandbox port
+	SandboxPortHeader string `json:"sandbox-port-header,omitempty"`
+	// HostHeaderName is the header name for host matching (fallback when sandbox header not found)
+	HostHeaderName string `json:"host-header-name,omitempty"`
 	// DefaultPort is the default port if not specified
 	DefaultPort string `json:"default-port,omitempty"`
 }
@@ -39,34 +33,32 @@ type Config struct {
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		HeaderMatchPolicy: HeaderMatchPolicySandbox,
-		HeaderMatchName:   "", // Empty by default - for host policy, will use Host() method
-		HeaderSandboxPort: "e2b-sandbox-port",
+		SandboxHeaderName: "e2b-sandbox-id",
+		SandboxPortHeader: "e2b-sandbox-port",
+		HostHeaderName:    DefaultHostHeaderName,
 		DefaultPort:       "80",
 	}
 }
 
 // Validate checks configuration validity
 func (c *Config) Validate() error {
-	if c.HeaderMatchPolicy != HeaderMatchPolicySandbox && c.HeaderMatchPolicy != HeaderMatchPolicyHost {
-		return fmt.Errorf("invalid header-match-policy: %s, must be 'sandbox' or 'host'", c.HeaderMatchPolicy)
-	}
 	return nil
 }
 
-// GetHeaderMatchName returns the effective header name to use
-// For sandbox policy with empty config, returns "e2b-sandbox-id" as default
-// For host policy with empty config, returns "" (will use Host() method)
-func (c *Config) GetHeaderMatchName() string {
-	if c.HeaderMatchName != "" {
-		return c.HeaderMatchName
+// GetSandboxHeaderName returns the effective sandbox header name
+func (c *Config) GetSandboxHeaderName() string {
+	if c.SandboxHeaderName != "" {
+		return c.SandboxHeaderName
 	}
-	// Default values when not explicitly set
-	if c.HeaderMatchPolicy == HeaderMatchPolicySandbox {
-		return "e2b-sandbox-id"
+	return "e2b-sandbox-id"
+}
+
+// GetHostHeaderName returns the effective host header name
+func (c *Config) GetHostHeaderName() string {
+	if c.HostHeaderName != "" {
+		return c.HostHeaderName
 	}
-	// For host policy, empty means use Host() method
-	return ""
+	return DefaultHostHeaderName
 }
 
 // ExtractHostInfo extracts both host key and port from the header in one regex call
@@ -133,14 +125,14 @@ func (p *ConfigParser) Merge(parent interface{}, child interface{}) interface{} 
 	merged := DefaultConfig()
 	*merged = *parentCfg
 
-	if childCfg.HeaderMatchPolicy != "" {
-		merged.HeaderMatchPolicy = childCfg.HeaderMatchPolicy
+	if childCfg.SandboxHeaderName != "" {
+		merged.SandboxHeaderName = childCfg.SandboxHeaderName
 	}
-	if childCfg.HeaderMatchName != "" {
-		merged.HeaderMatchName = childCfg.HeaderMatchName
+	if childCfg.SandboxPortHeader != "" {
+		merged.SandboxPortHeader = childCfg.SandboxPortHeader
 	}
-	if childCfg.HeaderSandboxPort != "" {
-		merged.HeaderSandboxPort = childCfg.HeaderSandboxPort
+	if childCfg.HostHeaderName != "" {
+		merged.HostHeaderName = childCfg.HostHeaderName
 	}
 	if childCfg.DefaultPort != "" {
 		merged.DefaultPort = childCfg.DefaultPort

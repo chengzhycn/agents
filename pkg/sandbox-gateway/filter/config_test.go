@@ -11,32 +11,24 @@ func TestConfigValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "valid sandbox policy",
+			name:    "default config",
+			cfg:     DefaultConfig(),
+			wantErr: false,
+		},
+		{
+			name: "custom sandbox header",
 			cfg: &Config{
-				HeaderMatchPolicy: HeaderMatchPolicySandbox,
+				SandboxHeaderName: "custom-sandbox-id",
+				SandboxPortHeader: "custom-sandbox-port",
+				HostHeaderName:    "X-Host",
+				DefaultPort:       "8080",
 			},
 			wantErr: false,
 		},
 		{
-			name: "valid host policy",
-			cfg: &Config{
-				HeaderMatchPolicy: HeaderMatchPolicyHost,
-			},
+			name:    "empty config",
+			cfg:     &Config{},
 			wantErr: false,
-		},
-		{
-			name: "invalid policy",
-			cfg: &Config{
-				HeaderMatchPolicy: "invalid",
-			},
-			wantErr: true,
-		},
-		{
-			name: "empty policy (zero value)",
-			cfg: &Config{
-				HeaderMatchPolicy: "",
-			},
-			wantErr: true,
 		},
 	}
 
@@ -50,52 +42,88 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestGetHeaderMatchName(t *testing.T) {
+func TestGetSandboxHeaderName(t *testing.T) {
 	tests := []struct {
 		name           string
 		cfg            *Config
 		wantHeaderName string
 	}{
 		{
-			name: "sandbox policy with empty config",
-			cfg: &Config{
-				HeaderMatchPolicy: HeaderMatchPolicySandbox,
-				HeaderMatchName:   "",
-			},
+			name:           "empty config uses default",
+			cfg:            &Config{},
 			wantHeaderName: "e2b-sandbox-id",
 		},
 		{
-			name: "sandbox policy with custom name",
+			name: "custom sandbox header name",
 			cfg: &Config{
-				HeaderMatchPolicy: HeaderMatchPolicySandbox,
-				HeaderMatchName:   "custom-header",
+				SandboxHeaderName: "custom-sandbox-id",
 			},
-			wantHeaderName: "custom-header",
+			wantHeaderName: "custom-sandbox-id",
 		},
 		{
-			name: "host policy with empty config",
-			cfg: &Config{
-				HeaderMatchPolicy: HeaderMatchPolicyHost,
-				HeaderMatchName:   "",
-			},
-			wantHeaderName: "",
-		},
-		{
-			name: "host policy with custom name",
-			cfg: &Config{
-				HeaderMatchPolicy: HeaderMatchPolicyHost,
-				HeaderMatchName:   "x-custom-host",
-			},
-			wantHeaderName: "x-custom-host",
+			name:           "default config",
+			cfg:            DefaultConfig(),
+			wantHeaderName: "e2b-sandbox-id",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.cfg.GetHeaderMatchName()
+			got := tt.cfg.GetSandboxHeaderName()
 			if got != tt.wantHeaderName {
-				t.Errorf("GetHeaderMatchName() = %q, want %q", got, tt.wantHeaderName)
+				t.Errorf("GetSandboxHeaderName() = %q, want %q", got, tt.wantHeaderName)
 			}
 		})
+	}
+}
+
+func TestGetHostHeaderName(t *testing.T) {
+	tests := []struct {
+		name           string
+		cfg            *Config
+		wantHeaderName string
+	}{
+		{
+			name:           "empty config uses default",
+			cfg:            &Config{},
+			wantHeaderName: "Host",
+		},
+		{
+			name: "custom host header name",
+			cfg: &Config{
+				HostHeaderName: "X-Forwarded-Host",
+			},
+			wantHeaderName: "X-Forwarded-Host",
+		},
+		{
+			name:           "default config",
+			cfg:            DefaultConfig(),
+			wantHeaderName: "Host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.cfg.GetHostHeaderName()
+			if got != tt.wantHeaderName {
+				t.Errorf("GetHostHeaderName() = %q, want %q", got, tt.wantHeaderName)
+			}
+		})
+	}
+}
+
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.SandboxHeaderName != "e2b-sandbox-id" {
+		t.Errorf("DefaultConfig().SandboxHeaderName = %q, want %q", cfg.SandboxHeaderName, "e2b-sandbox-id")
+	}
+	if cfg.SandboxPortHeader != "e2b-sandbox-port" {
+		t.Errorf("DefaultConfig().SandboxPortHeader = %q, want %q", cfg.SandboxPortHeader, "e2b-sandbox-port")
+	}
+	if cfg.HostHeaderName != "Host" {
+		t.Errorf("DefaultConfig().HostHeaderName = %q, want %q", cfg.HostHeaderName, "Host")
+	}
+	if cfg.DefaultPort != "80" {
+		t.Errorf("DefaultConfig().DefaultPort = %q, want %q", cfg.DefaultPort, "80")
 	}
 }

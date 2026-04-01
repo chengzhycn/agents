@@ -32,48 +32,53 @@ type sandboxFilter struct {
 }
 
 func (f *sandboxFilter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.StatusType {
-	// Get the effective header name (with defaults applied)
-	headerName := f.config.GetHeaderMatchName()
+	// First, try to get sandbox ID from sandbox header
+	sandboxHeaderName := f.config.GetSandboxHeaderName()
+	sandboxID, _ := header.Get(sandboxHeaderName)
+	var port string
 
-	// Get the raw header value based on the configured header name
-	// For host policy with empty header-match-name, use Host() method
-	var rawHeaderValue string
-	if f.config.HeaderMatchPolicy == HeaderMatchPolicyHost && headerName == "" {
-		rawHeaderValue = header.Host()
+	if sandboxID != "" {
+		// Sandbox header found, get port from port header
+		port, _ = header.Get(f.config.SandboxPortHeader)
+		if port == "" {
+			port = f.config.DefaultPort
+			logger.Debug("Using default port for sandbox header mode", zap.String("port", port))
+		}
+		logger.Debug("DecodeHeaders: using sandbox header",
+			zap.String("sandboxHeaderName", sandboxHeaderName),
+			zap.String("sandboxID", sandboxID),
+			zap.String("port", port))
 	} else {
-		rawHeaderValue, _ = header.Get(headerName)
-	}
-	logger.Debug("DecodeHeaders called",
-		zap.String("headerName", headerName),
-		zap.String("rawValue", rawHeaderValue),
-		zap.String("policy", string(f.config.HeaderMatchPolicy)))
-
-	if rawHeaderValue == "" {
-		logger.Debug("No header value found, continuing")
-		return api.Continue
-	}
-
-	// Extract host key and port based on the configured policy
-	var sandboxID, port string
-	switch f.config.HeaderMatchPolicy {
-	case HeaderMatchPolicyHost:
-		// In host mode, extract both hostKey and port in one regex call
-		// from the header value (<port>-<namespace>--<name>.domain)
-		sandboxID, port = f.config.ExtractHostInfo(rawHeaderValue)
-		if port == "" {
-			logger.Warn("Failed to extract port from host header, using default",
-				zap.String("rawValue", rawHeaderValue))
-			port = f.config.DefaultPort
+		// Sandbox header not found, try host header
+		hostHeaderName := f.config.GetHostHeaderName()
+		var hostValue string
+		if hostHeaderName == DefaultHostHeaderName {
+			hostValue = header.Host()
+		} else {
+			hostValue, _ = header.Get(hostHeaderName)
 		}
-	case HeaderMatchPolicySandbox:
-		// In sandbox mode, hostKey is the header value directly
-		sandboxID = rawHeaderValue
-		// Get port from the port header
-		port, _ = header.Get(f.config.HeaderSandboxPort)
+
+		if hostValue == "" {
+			logger.Debug("No sandbox header or host header found, continuing")
+			return api.Continue
+		}
+
+		// Extract sandbox ID and port from host format: <port>-<namespace>--<name>.domain
+		sandboxID, port = f.config.ExtractHostInfo(hostValue)
+		if sandboxID == "" {
+			logger.Debug("Host header doesn't match expected format, continuing", zap.String("hostValue", hostValue))
+			// When parsing fails, continue to allow normal routing
+			return api.Continue
+		}
 		if port == "" {
 			port = f.config.DefaultPort
-			logger.Debug("Using default port", zap.String("port", port))
+			logger.Debug("Using default port for host header mode", zap.String("port", port))
 		}
+		logger.Debug("DecodeHeaders: using host header",
+			zap.String("hostHeaderName", hostHeaderName),
+			zap.String("hostValue", hostValue),
+			zap.String("sandboxID", sandboxID),
+			zap.String("port", port))
 	}
 
 	// Look up the pod IP from registry
