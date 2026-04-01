@@ -16,6 +16,7 @@ import (
 	"github.com/openkruise/agents/pkg/sandbox-manager/consts"
 	"github.com/openkruise/agents/pkg/sandbox-manager/infra"
 	"github.com/openkruise/agents/pkg/utils"
+	stateutils "github.com/openkruise/agents/pkg/utils/sandboxutils"
 )
 
 var (
@@ -76,24 +77,24 @@ func CloneSandbox(ctx context.Context, opts infra.CloneSandboxOptions, cache *Ca
 	}
 
 	// Step 1: get checkpoint and template from cache or API server
-	tmpl, cp, metrics, err := stepFindCheckpointAndTemplate(ctx, opts, cache, client, metrics)
+	tmpl, cp, metrics, err := findCheckpointAndTemplateById(ctx, opts, cache, client, metrics)
 	if err != nil {
 		return nil, metrics, err
 	}
 
 	// Step 2: create new sandbox from checkpoint
-	sbx, initRuntimeOpts, metrics, err := stepCreateSandboxFromCheckpoint(ctx, opts, tmpl, cp, cache, client, metrics)
+	sbx, initRuntimeOpts, metrics, err := createSandboxFromCheckpoint(ctx, opts, tmpl, cp, cache, client, metrics)
 	if err != nil {
 		return nil, metrics, err
 	}
 
 	// Step 3: wait for sandbox ready
-	if metrics, err = stepWaitSandboxReady(ctx, sbx, opts, cache, metrics); err != nil {
+	if metrics, err = cloneWaitSandboxReady(ctx, sbx, opts, cache, metrics); err != nil {
 		return nil, metrics, err
 	}
 
 	// Step 4: re-init runtime
-	if metrics, err = stepReInitRuntime(ctx, sbx, opts, initRuntimeOpts, metrics); err != nil {
+	if metrics, err = cloneReInitRuntime(ctx, sbx, opts, initRuntimeOpts, metrics); err != nil {
 		return nil, metrics, err
 	}
 
@@ -115,14 +116,17 @@ func CloneSandbox(ctx context.Context, opts infra.CloneSandboxOptions, cache *Ca
 	return sbx, metrics, nil
 }
 
-// stepFindCheckpointAndTemplate gets checkpoint and template from cache, fallback to API server if not found
-func stepFindCheckpointAndTemplate(ctx context.Context, opts infra.CloneSandboxOptions, cache *Cache, client *clients.ClientSet, metrics infra.CloneMetrics) (*v1alpha1.SandboxTemplate, *v1alpha1.Checkpoint, infra.CloneMetrics, error) {
+// findCheckpointAndTemplateById gets checkpoint and template from cache, fallback to API server if not found
+func findCheckpointAndTemplateById(ctx context.Context, opts infra.CloneSandboxOptions, cache *Cache, client *clients.ClientSet, metrics infra.CloneMetrics) (*v1alpha1.SandboxTemplate, *v1alpha1.Checkpoint, infra.CloneMetrics, error) {
 	log := klog.FromContext(ctx).WithValues("checkpoint", opts.CheckPointID, "step", "1.findCheckpointAndTemplate")
 	start := time.Now()
 
 	// Try to get checkpoint from cache first
 	var checkpoint *v1alpha1.Checkpoint
-	err := retry.OnError(utils.CacheBackoff, utils.RetryIfContextNotCanceled(ctx), func() error {
+	retryFunc := utils.RetryIfContextNotCanceled(ctx)
+	err := retry.OnError(utils.CacheBackoff, func(err error) bool {
+		return !opts.SkipWaitCheckpoint && retryFunc(err)
+	}, func() error {
 		cp, err := cache.GetCheckpoint(opts.CheckPointID)
 		if err != nil {
 			return err
@@ -153,8 +157,8 @@ func stepFindCheckpointAndTemplate(ctx context.Context, opts infra.CloneSandboxO
 	return template, checkpoint, metrics, nil
 }
 
-// stepCreateSandboxFromCheckpoint creates a new sandbox from checkpoint
-func stepCreateSandboxFromCheckpoint(ctx context.Context, opts infra.CloneSandboxOptions, tmpl *v1alpha1.SandboxTemplate, cp *v1alpha1.Checkpoint, cache *Cache, client *clients.ClientSet, metrics infra.CloneMetrics) (*Sandbox, *config.InitRuntimeOptions, infra.CloneMetrics, error) {
+// createSandboxFromCheckpoint creates a new sandbox from checkpoint
+func createSandboxFromCheckpoint(ctx context.Context, opts infra.CloneSandboxOptions, tmpl *v1alpha1.SandboxTemplate, cp *v1alpha1.Checkpoint, cache *Cache, client *clients.ClientSet, metrics infra.CloneMetrics) (*Sandbox, *config.InitRuntimeOptions, infra.CloneMetrics, error) {
 	log := klog.FromContext(ctx).WithValues("checkpoint", opts.CheckPointID, "step", "2.createSandboxFromCheckpoint")
 	start := time.Now()
 	initRuntimeOpts, err := getInitRuntimeRequest(cp)
@@ -181,8 +185,8 @@ func stepCreateSandboxFromCheckpoint(ctx context.Context, opts infra.CloneSandbo
 	return sbx, initRuntimeOpts, metrics, nil
 }
 
-// stepWaitSandboxReady waits for the sandbox to be ready
-func stepWaitSandboxReady(ctx context.Context, sbx *Sandbox, opts infra.CloneSandboxOptions, cache *Cache, metrics infra.CloneMetrics) (infra.CloneMetrics, error) {
+// cloneWaitSandboxReady waits for the sandbox to be ready
+func cloneWaitSandboxReady(ctx context.Context, sbx *Sandbox, opts infra.CloneSandboxOptions, cache *Cache, metrics infra.CloneMetrics) (infra.CloneMetrics, error) {
 	log := klog.FromContext(ctx).WithValues("checkpoint", opts.CheckPointID, "step", "3.waitSandboxReady")
 	var err error
 	metrics.WaitReady, err = waitForSandboxReady(ctx, sbx, infra.ClaimSandboxOptions{
@@ -196,8 +200,8 @@ func stepWaitSandboxReady(ctx context.Context, sbx *Sandbox, opts infra.CloneSan
 	return metrics, nil
 }
 
-// stepReInitRuntime re-initializes the runtime if needed
-func stepReInitRuntime(ctx context.Context, sbx *Sandbox, opts infra.CloneSandboxOptions, initRuntimeOpts *config.InitRuntimeOptions, metrics infra.CloneMetrics) (infra.CloneMetrics, error) {
+// cloneReInitRuntime re-initializes the runtime if needed
+func cloneReInitRuntime(ctx context.Context, sbx *Sandbox, opts infra.CloneSandboxOptions, initRuntimeOpts *config.InitRuntimeOptions, metrics infra.CloneMetrics) (infra.CloneMetrics, error) {
 	log := klog.FromContext(ctx).WithValues("checkpoint", opts.CheckPointID, "step", "4.reInitRuntime")
 	if initRuntimeOpts == nil {
 		return metrics, nil
@@ -286,6 +290,8 @@ func CreateCheckpoint(ctx context.Context, sbx *v1alpha1.Sandbox, client clients
 			Namespace: sbx.Namespace,
 			Annotations: map[string]string{
 				v1alpha1.AnnotationInitRuntimeRequest: sbx.Annotations[v1alpha1.AnnotationInitRuntimeRequest],
+				v1alpha1.AnnotationOwner:              sbx.Annotations[v1alpha1.AnnotationOwner],
+				v1alpha1.AnnotationSandboxID:          stateutils.GetSandboxID(sbx),
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
@@ -349,5 +355,16 @@ func checkCheckpointReady(ctx context.Context, cp *v1alpha1.Checkpoint) (bool, e
 		return true, nil
 	default:
 		return false, nil
+	}
+}
+
+func AsCheckpointInfo(cp *v1alpha1.Checkpoint) infra.CheckpointInfo {
+	return infra.CheckpointInfo{
+		Name:              cp.Name,
+		Namespace:         cp.Namespace,
+		Phase:             string(cp.Status.Phase),
+		CheckpointID:      cp.Status.CheckpointId,
+		SandboxID:         cp.Annotations[v1alpha1.AnnotationSandboxID],
+		CreationTimestamp: cp.CreationTimestamp.Format(time.RFC3339),
 	}
 }
