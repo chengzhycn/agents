@@ -64,6 +64,8 @@ kubectl wait --for=condition=ready pod \
 
 echo "All sandbox-manager pods are ready"
 
+sudo -E kubectl port-forward svc/sandbox-manager 80:7788 -n sandbox-system &
+
 # Step 2: Install e2b-code-interpreter
 echo "Installing dependencies..."
 pip install -r $TEST_DIR/requirements.txt
