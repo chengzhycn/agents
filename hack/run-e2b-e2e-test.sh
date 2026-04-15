@@ -64,7 +64,16 @@ kubectl wait --for=condition=ready pod \
 
 echo "All sandbox-manager pods are ready"
 
-sudo -E kubectl port-forward svc/sandbox-manager 80:7788 -n sandbox-system &
+# Wait for sandbox-gateway pods to be ready
+echo "Waiting for sandbox-gateway pods to be ready..."
+kubectl wait --for=condition=ready pod \
+    -l app.kubernetes.io/name=sandbox-gateway \
+    -n sandbox-system \
+    --timeout=5m
+echo "All sandbox-gateway pods are ready"
+
+# Port-forward gateway as unified entry point (80 -> 7788, which targets Envoy :10000)
+sudo -E kubectl port-forward svc/sandbox-gateway 80:7788 -n sandbox-system &
 
 # Step 2: Install e2b-code-interpreter
 echo "Installing dependencies..."
@@ -131,6 +140,21 @@ else
     kubectl get pod -n sandbox-system --no-headers -l component=sandbox-manager
     echo "sandbox-manager has restarted, abort!!!"
     kubectl get pod -n sandbox-system -l component=sandbox-manager --no-headers | awk '{print $1}' | xargs -I {} kubectl logs -p -n sandbox-system {}
+    exit 1
+fi
+
+# Check if sandbox-gateway pods restarted
+gwRestartCount=$(kubectl get pod -n sandbox-system -l app.kubernetes.io/name=sandbox-gateway --no-headers | awk '{sum+=$4} END {print sum}')
+if [ -z "$gwRestartCount" ]; then
+    gwRestartCount=0
+fi
+
+if [ "${gwRestartCount}" -eq "0" ]; then
+    echo "sandbox-gateway has not restarted"
+else
+    kubectl get pod -n sandbox-system --no-headers -l app.kubernetes.io/name=sandbox-gateway
+    echo "sandbox-gateway has restarted, abort!!!"
+    kubectl get pod -n sandbox-system -l app.kubernetes.io/name=sandbox-gateway --no-headers | awk '{print $1}' | xargs -I {} kubectl logs -p -n sandbox-system {}
     exit 1
 fi
 

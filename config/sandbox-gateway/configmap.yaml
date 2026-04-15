@@ -26,6 +26,8 @@ data:
                   typed_config:
                     "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
                     stat_prefix: ingress_http
+                    upgrade_configs:
+                      - upgrade_type: websocket
                     access_log:
                       - name: envoy.access_loggers.stdout
                         typed_config:
@@ -38,6 +40,10 @@ data:
                         - name: backend
                           domains: ["*"]
                           routes:
+                            - match:
+                                prefix: "/kruise/api"
+                              route:
+                                cluster: manager_cluster
                             - match:
                                 prefix: "/"
                               route:
@@ -77,3 +83,16 @@ data:
               max_pending_requests: 32768
               max_requests: 65536
               max_retries: 5
+        - name: manager_cluster
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          connect_timeout: 5s
+          load_assignment:
+            cluster_name: manager_cluster
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: sandbox-manager.sandbox-system.svc.cluster.local
+                          port_value: 7788
