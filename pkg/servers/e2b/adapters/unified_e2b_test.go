@@ -216,3 +216,113 @@ func TestIsSandboxRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeE2BAdapterHeaderBasedMap(t *testing.T) {
+	tests := []struct {
+		name      string
+		adapter   *NativeE2BAdapter
+		authority string
+		headers   map[string]string
+
+		expectErr         bool
+		expectSandboxID   string
+		expectSandboxPort int
+	}{
+		{
+			name:              "header-only: sandbox ID and port from headers",
+			adapter:           &NativeE2BAdapter{},
+			authority:         "some-non-matching-host",
+			headers:           map[string]string{DefaultSandboxIDHeader: "ns--sandbox1", DefaultSandboxPortHeader: "8080"},
+			expectSandboxID:   "ns--sandbox1",
+			expectSandboxPort: 8080,
+		},
+		{
+			name:              "header with default port: sandbox ID from header, no port header",
+			adapter:           &NativeE2BAdapter{DefaultPort: 49983},
+			authority:         "some-non-matching-host",
+			headers:           map[string]string{DefaultSandboxIDHeader: "ns--sandbox1"},
+			expectSandboxID:   "ns--sandbox1",
+			expectSandboxPort: 49983,
+		},
+		{
+			name:      "header without port and no default port: returns error",
+			adapter:   &NativeE2BAdapter{},
+			authority: "some-non-matching-host",
+			headers:   map[string]string{DefaultSandboxIDHeader: "ns--sandbox1"},
+			expectErr: true,
+		},
+		{
+			name:              "header takes priority: both sandbox ID header and valid hostname present",
+			adapter:           &NativeE2BAdapter{DefaultPort: 49983},
+			authority:         "3000-host--sandbox.example.com",
+			headers:           map[string]string{DefaultSandboxIDHeader: "ns--header-sandbox", DefaultSandboxPortHeader: "9090"},
+			expectSandboxID:   "ns--header-sandbox",
+			expectSandboxPort: 9090,
+		},
+		{
+			name:              "hostname fallback: no sandbox ID header, falls back to hostname parsing",
+			adapter:           &NativeE2BAdapter{},
+			authority:         "3000-ns--sandbox1.example.com",
+			headers:           map[string]string{},
+			expectSandboxID:   "ns--sandbox1",
+			expectSandboxPort: 3000,
+		},
+		{
+			name:              "hostname fallback with nil headers",
+			adapter:           &NativeE2BAdapter{},
+			authority:         "3000-ns--sandbox1.example.com",
+			headers:           nil,
+			expectSandboxID:   "ns--sandbox1",
+			expectSandboxPort: 3000,
+		},
+		{
+			name:              "custom host header: reads hostname from custom header",
+			adapter:           &NativeE2BAdapter{HostHeader: "x-custom-host"},
+			authority:         "some-api-gateway.internal",
+			headers:           map[string]string{"x-custom-host": "8080-ns--sandbox2.example.com"},
+			expectSandboxID:   "ns--sandbox2",
+			expectSandboxPort: 8080,
+		},
+		{
+			name:      "custom host header: custom header not present, authority doesn't match",
+			adapter:   &NativeE2BAdapter{HostHeader: "x-custom-host"},
+			authority: "some-api-gateway.internal",
+			headers:   map[string]string{},
+			expectErr: true,
+		},
+		{
+			name:      "neither hostname nor header: returns error",
+			adapter:   &NativeE2BAdapter{},
+			authority: "invalid-authority",
+			headers:   map[string]string{},
+			expectErr: true,
+		},
+		{
+			name:      "invalid port in sandbox port header",
+			adapter:   &NativeE2BAdapter{},
+			authority: "invalid-authority",
+			headers:   map[string]string{DefaultSandboxIDHeader: "ns--sandbox1", DefaultSandboxPortHeader: "not-a-number"},
+			expectErr: true,
+		},
+		{
+			name:              "custom header names: configurable sandbox ID and port headers",
+			adapter:           &NativeE2BAdapter{SandboxIDHeader: "x-sandbox-id", SandboxPortHeader: "x-sandbox-port"},
+			authority:         "invalid-authority",
+			headers:           map[string]string{"x-sandbox-id": "ns--sandbox1", "x-sandbox-port": "7777"},
+			expectSandboxID:   "ns--sandbox1",
+			expectSandboxPort: 7777,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sandboxID, sandboxPort, _, err := tt.adapter.Map("http", tt.authority, "/", 0, tt.headers)
+			if tt.expectErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectSandboxID, sandboxID)
+			assert.Equal(t, tt.expectSandboxPort, sandboxPort)
+		})
+	}
+}
