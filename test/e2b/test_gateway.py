@@ -30,8 +30,7 @@ def test_gateway_header_based_routing(sandbox_context):
         },
         timeout=10,
     )
-    assert resp.status_code != 404, f"Gateway 404: sandbox {sandbox_id} not in registry"
-    assert resp.status_code != 502, f"Gateway 502: sandbox {sandbox_id} not running"
+    assert resp.status_code != 502, f"Gateway 502: sandbox {sandbox_id} not found or not running"
 
 
 def test_gateway_host_based_routing(sandbox_context):
@@ -55,5 +54,4 @@ def test_gateway_host_based_routing(sandbox_context):
         headers={"Host": host},
         timeout=10,
     )
-    assert resp.status_code != 404, f"Gateway 404: sandbox {sandbox_id} not in registry"
-    assert resp.status_code != 502, f"Gateway 502: sandbox {sandbox_id} not running"
+    assert resp.status_code != 502, f"Gateway 502: sandbox {sandbox_id} not found or not running"

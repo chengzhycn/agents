@@ -69,7 +69,7 @@ func (f *sandboxFilter) DecodeHeaders(header api.RequestHeaderMap, endStream boo
 	if !ok {
 		logger.Warn("Sandbox not found in registry", zap.String("sandboxID", sandboxID))
 		f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-			404,
+			502,
 			"sandbox not found: "+sandboxID,
 			nil,
 			-1,

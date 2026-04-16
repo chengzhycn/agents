@@ -347,10 +347,10 @@ func TestDecodeHeadersSandboxNotFound(t *testing.T) {
 
 	status := filter.DecodeHeaders(header, true)
 
-	// Verify - should return LocalReply with 404
+	// Verify - should return LocalReply with 502
 	assert.Equal(t, api.LocalReply, status)
 	assert.True(t, mockCallbacks.decoderCallbacks.sendLocalReplyCalled)
-	assert.Equal(t, 404, mockCallbacks.decoderCallbacks.replyStatusCode)
+	assert.Equal(t, 502, mockCallbacks.decoderCallbacks.replyStatusCode)
 	assert.Contains(t, mockCallbacks.decoderCallbacks.replyBody, "nonexistent-sandbox")
 	assert.Equal(t, "sandbox_not_found", mockCallbacks.decoderCallbacks.replyDetails)
 }
@@ -369,10 +369,10 @@ func TestDecodeHeadersSandboxNotFoundHostFallback(t *testing.T) {
 
 	status := filter.DecodeHeaders(header, true)
 
-	// Verify - should return LocalReply with 404
+	// Verify - should return LocalReply with 502
 	assert.Equal(t, api.LocalReply, status)
 	assert.True(t, mockCallbacks.decoderCallbacks.sendLocalReplyCalled)
-	assert.Equal(t, 404, mockCallbacks.decoderCallbacks.replyStatusCode)
+	assert.Equal(t, 502, mockCallbacks.decoderCallbacks.replyStatusCode)
 	assert.Contains(t, mockCallbacks.decoderCallbacks.replyBody, "nonexistent--sandbox")
 	assert.Equal(t, "sandbox_not_found", mockCallbacks.decoderCallbacks.replyDetails)
 }
@@ -720,7 +720,7 @@ func TestDecodeHeadersMultipleRequests(t *testing.T) {
 	status3 := filter3.DecodeHeaders(header3, true)
 	assert.Equal(t, api.LocalReply, status3)
 	assert.True(t, mockCallbacks3.decoderCallbacks.sendLocalReplyCalled)
-	assert.Equal(t, 404, mockCallbacks3.decoderCallbacks.replyStatusCode)
+	assert.Equal(t, 502, mockCallbacks3.decoderCallbacks.replyStatusCode)
 }
 
 // TestDecodeHeadersMultipleRequestsHostFallback tests multiple requests via host header
@@ -761,7 +761,7 @@ func TestDecodeHeadersMultipleRequestsHostFallback(t *testing.T) {
 	status3 := filter3.DecodeHeaders(header3, true)
 	assert.Equal(t, api.LocalReply, status3)
 	assert.True(t, mockCallbacks3.decoderCallbacks.sendLocalReplyCalled)
-	assert.Equal(t, 404, mockCallbacks3.decoderCallbacks.replyStatusCode)
+	assert.Equal(t, 502, mockCallbacks3.decoderCallbacks.replyStatusCode)
 }
 
 // TestDecodeHeadersEndStreamFalse tests that endStream parameter doesn't affect the logic
@@ -841,7 +841,7 @@ func TestDecodeHeadersKruiseCustomProtocolNotFound(t *testing.T) {
 
 	assert.Equal(t, api.LocalReply, status)
 	assert.True(t, mockCallbacks.decoderCallbacks.sendLocalReplyCalled)
-	assert.Equal(t, 404, mockCallbacks.decoderCallbacks.replyStatusCode)
+	assert.Equal(t, 502, mockCallbacks.decoderCallbacks.replyStatusCode)
 }
 
 // TestDecodeHeadersKruiseCustomProtocolInvalidPath tests kruise routing with invalid path
