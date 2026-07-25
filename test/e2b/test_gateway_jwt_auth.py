@@ -1,5 +1,6 @@
 """E2E tests for sandbox-gateway TrafficAccessToken JWT authentication."""
 
+from functools import wraps
 import os
 import shlex
 import subprocess
@@ -8,6 +9,7 @@ import time
 import pytest
 import requests
 from e2b import PtySize
+from e2b.sandbox.main import SandboxBase
 from e2b_code_interpreter import Sandbox
 from websocket import WebSocketBadStatusException, create_connection
 
@@ -71,6 +73,35 @@ pytestmark = [
 ]
 
 
+def enable_traffic_access_token_header():
+    """Inject trafficAccessToken into E2B sandbox data-plane requests."""
+    current_init = SandboxBase.__init__
+    if getattr(current_init, "_traffic_token_header_patch", False):
+        return
+
+    @wraps(current_init)
+    def patched_init(self, *args, **kwargs):
+        current_init(self, *args, **kwargs)
+
+        token = getattr(self, "traffic_access_token", None)
+        if not token:
+            return
+
+        extra_headers = getattr(
+            self.connection_config,
+            "_ConnectionConfig__extra_sandbox_headers",
+            None,
+        )
+        if not isinstance(extra_headers, dict):
+            raise RuntimeError(
+                "installed e2b SDK does not expose mutable extra sandbox headers"
+            )
+        extra_headers[TRAFFIC_ACCESS_TOKEN_HEADER] = token
+
+    patched_init._traffic_token_header_patch = True
+    SandboxBase.__init__ = patched_init
+
+
 def issue_traffic_access_token(sandbox_id, sandbox_uid, expired=False):
     command = shlex.split(TOKEN_COMMAND) + [
         "--sandbox-id",
@@ -95,7 +126,8 @@ def sandbox_client_with_traffic_jwt(
     sandbox: Sandbox, traffic_jwt: str
 ) -> Sandbox:
     # The E2E issuer is external to sandbox-manager. Rebuild the client as if
-    # CreateSandbox had returned the issued JWT, exercising patch_e2b at init.
+    # CreateSandbox had returned the issued JWT, exercising the standalone
+    # traffic-token patch at init.
     return Sandbox(
         sandbox_id=sandbox.sandbox_id,
         sandbox_domain=sandbox.sandbox_domain,
@@ -218,6 +250,8 @@ def test_gateway_traffic_access_token_jwt(sandbox_context, config):
 
 def test_gateway_traffic_access_token_jwt_with_e2b_sdk(sandbox_context, config):
     """Verify JWT authentication across E2B SDK data-plane transports."""
+    enable_traffic_access_token_header()
+
     sandbox: Sandbox = sandbox_context.add(
         Sandbox.create(
             template=config.templates.code_interpreter,
