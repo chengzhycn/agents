@@ -100,14 +100,8 @@ func RestoreAnnotationsFromCheckpoint(cp *v1alpha1.Checkpoint, sbx *v1alpha1.San
 // restoration plus the clone-specific JWT inheritance rule: an explicit
 // request may enable inherited JWT auth, but cannot disable it.
 func restoreAnnotationsFromCheckpointForClone(cp *v1alpha1.Checkpoint, sbx *v1alpha1.Sandbox) error {
-	checkpointSetting, err := parseJWTAuthSetting(cp.GetAnnotations())
-	if err != nil {
-		return fmt.Errorf("invalid checkpoint JWT authentication setting: %w", err)
-	}
-	requestSetting, err := parseJWTAuthSetting(sbx.GetAnnotations())
-	if err != nil {
-		return fmt.Errorf("invalid clone JWT authentication setting: %w", err)
-	}
+	checkpointSetting := parseJWTAuthSetting(cp.GetAnnotations())
+	requestSetting := parseJWTAuthSetting(sbx.GetAnnotations())
 
 	if checkpointSetting == jwtAuthEnabled && requestSetting == jwtAuthDisabled {
 		return fmt.Errorf("cannot disable JWT authentication inherited from checkpoint")
@@ -131,17 +125,13 @@ func restoreAnnotationsFromCheckpointForClone(cp *v1alpha1.Checkpoint, sbx *v1al
 	return nil
 }
 
-func parseJWTAuthSetting(annotations map[string]string) (jwtAuthSetting, error) {
+func parseJWTAuthSetting(annotations map[string]string) jwtAuthSetting {
 	value, present := annotations[identity.AnnotationEnableJwtAuth]
 	if !present {
-		return jwtAuthUnset, nil
+		return jwtAuthUnset
 	}
-	switch value {
-	case v1alpha1.True:
-		return jwtAuthEnabled, nil
-	case v1alpha1.False:
-		return jwtAuthDisabled, nil
-	default:
-		return jwtAuthUnset, fmt.Errorf("%s must be %q or %q", identity.AnnotationEnableJwtAuth, v1alpha1.True, v1alpha1.False)
+	if value == v1alpha1.True {
+		return jwtAuthEnabled
 	}
+	return jwtAuthDisabled
 }

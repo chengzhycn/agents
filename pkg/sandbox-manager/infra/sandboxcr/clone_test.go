@@ -484,6 +484,9 @@ func TestPrepareSandboxFromCheckpoint_JWTAuthMerge(t *testing.T) {
 		{name: "inherits enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), expectSetting: ptr.To(v1alpha1.True)},
 		{name: "request keeps enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), requestSetting: ptr.To(v1alpha1.True), expectSetting: ptr.To(v1alpha1.True)},
 		{name: "request cannot weaken enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), requestSetting: ptr.To(v1alpha1.False), expectError: "cannot disable JWT authentication inherited from checkpoint"},
+		{name: "non-standard request value disables", requestSetting: ptr.To("True"), expectSetting: ptr.To(v1alpha1.False)},
+		{name: "non-standard checkpoint value is disabled", checkpointSetting: ptr.To("1"), expectSetting: ptr.To(v1alpha1.False)},
+		{name: "non-standard request cannot weaken enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), requestSetting: ptr.To("True"), expectError: "cannot disable JWT authentication inherited from checkpoint"},
 	}
 
 	for _, tt := range tests {
@@ -2517,6 +2520,7 @@ func TestCloneSandbox_TrafficAccessToken(t *testing.T) {
 		providerError     error
 		expectError       string
 		expectToken       bool
+		expectInterrupted bool
 	}{
 		{
 			name:              "issues token for cloned sandbox identity",
@@ -2533,6 +2537,13 @@ func TestCloneSandbox_TrafficAccessToken(t *testing.T) {
 			checkpointSetting: v1alpha1.True,
 			providerError:     errors.New("traffic token provider unavailable"),
 			expectError:       "traffic token provider unavailable",
+		},
+		{
+			name:              "context cancellation is preserved",
+			checkpointSetting: v1alpha1.True,
+			providerError:     context.Canceled,
+			expectError:       context.Canceled.Error(),
+			expectInterrupted: true,
 		},
 		{
 			name:              "empty token fails clone",
@@ -2602,7 +2613,12 @@ func TestCloneSandbox_TrafficAccessToken(t *testing.T) {
 				assert.Nil(t, sbx)
 				assert.True(t, providerCalled)
 				var retryErr retriableError
-				assert.True(t, errors.As(cloneErr, &retryErr))
+				if tt.expectInterrupted {
+					assert.ErrorIs(t, cloneErr, context.Canceled)
+					assert.False(t, errors.As(cloneErr, &retryErr))
+				} else {
+					assert.True(t, errors.As(cloneErr, &retryErr))
+				}
 				stored := &v1alpha1.Sandbox{}
 				deleteErr := fc.Get(t.Context(), types.NamespacedName{Namespace: "default", Name: sandboxName}, stored)
 				assert.True(t, apierrors.IsNotFound(deleteErr), "failed clone must clean up the new sandbox")

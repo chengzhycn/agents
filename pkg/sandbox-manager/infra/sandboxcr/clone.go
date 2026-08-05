@@ -191,6 +191,7 @@ func CloneSandbox(ctx context.Context, opts infra.CloneSandboxOptions, cache inf
 		metrics.Total += metrics.SecurityToken
 	}
 
+	// Step 7: issue traffic access token
 	// Mint a new traffic access token for the cloned sandbox. The token is bound
 	// to the clone's identity and stays only on the transient wrapper returned to
 	// the API layer; it is never persisted to the Sandbox or Checkpoint.
@@ -200,17 +201,16 @@ func CloneSandbox(ctx context.Context, opts infra.CloneSandboxOptions, cache inf
 		metrics.TrafficToken = time.Since(start)
 		metrics.Total += metrics.TrafficToken
 		if issueErr != nil {
-			err = retriableError{Message: issueErr.Error()}
-			return
-		}
-		if validationErr := validateTrafficTokenResponse(accessResp); validationErr != nil {
-			err = retriableError{Message: validationErr.Error()}
+			err = issueErr
+			if !wait.Interrupted(err) {
+				err = retriableError{Message: issueErr.Error()}
+			}
 			return
 		}
 		sbx.trafficToken = accessResp
 	}
 
-	// Step 7: csi mount
+	// Step 8: csi mount
 	// If opts.CSIMount is not provided from request, try to resolve mount options from sandbox annotation.
 	if opts.CSIMount == nil {
 		var resolveErr error
@@ -234,19 +234,6 @@ func CloneSandbox(ctx context.Context, opts infra.CloneSandboxOptions, cache inf
 
 	cloned = sbx
 	return
-}
-
-func validateTrafficTokenResponse(resp *identity.TokenResponse) error {
-	if resp == nil {
-		return fmt.Errorf("identity provider returned an empty access token response")
-	}
-	if resp.AccessToken == "" {
-		return fmt.Errorf("identity provider returned an empty access token")
-	}
-	if _, err := time.Parse(time.RFC3339, resp.AccessTokenExpiration); err != nil {
-		return fmt.Errorf("identity provider returned an invalid access token expiration: %w", err)
-	}
-	return nil
 }
 
 // findCheckpointAndTemplateById gets checkpoint and template from cache, fallback to API server if not found
