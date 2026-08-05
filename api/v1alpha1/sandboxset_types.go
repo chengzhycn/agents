@@ -63,6 +63,12 @@ const (
 	// AnnotationUpdatedMetadataInClaim stores the keys of labels/annotations added or modified
 	// during the claim flow (JSON format, keys only). Used by the recycle flow to reset metadata.
 	AnnotationUpdatedMetadataInClaim = InternalPrefix + "updated-metadata-in-claim"
+	// AnnotationE2BNetworkConfig stores the protocol-independent desired E2B network state.
+	AnnotationE2BNetworkConfig = InternalPrefix + "e2b-network-config-v1"
+	// AnnotationE2BNetworkConfigHash identifies the desired E2B network state applied by sandbox-manager.
+	AnnotationE2BNetworkConfigHash = InternalPrefix + "e2b-network-config-hash"
+	// AnnotationE2BNetworkOperation serializes E2B network updates across manager replicas.
+	AnnotationE2BNetworkOperation = InternalPrefix + "e2b-network-operation"
 )
 
 // AnnotationsClearedOnRecycle lists all annotation keys that are removed from a
@@ -87,6 +93,9 @@ var AnnotationsClearedOnRecycle = []string{
 	AnnotationEnvdAccessToken,
 	AnnotationEnvdURL,
 	AnnotationRuntimeURL,
+	AnnotationE2BNetworkConfig,
+	AnnotationE2BNetworkConfigHash,
+	AnnotationE2BNetworkOperation,
 }
 
 // InternalKeysPreservedOnCreation lists internal keys (with the InternalPrefix)

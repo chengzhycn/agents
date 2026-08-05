@@ -43,12 +43,16 @@ import (
 type ClaimSandboxOptions struct {
 	Infra infra.ClaimSandboxOptions
 	Quota *quotaspec.QuotaSpec
+	// Network is reconciled before the sandbox route is published. Nil skips
+	// network management for non-E2B callers.
+	Network *infra.SandboxNetworkConfig
 }
 
 // CloneSandboxOptions wraps infra-level clone options with an optional quota spec.
 type CloneSandboxOptions struct {
-	Infra infra.CloneSandboxOptions
-	Quota *quotaspec.QuotaSpec
+	Infra   infra.CloneSandboxOptions
+	Quota   *quotaspec.QuotaSpec
+	Network *infra.SandboxNetworkConfig
 }
 
 // DeleteSandboxOptions carries the sandbox, user identity, and optional quota spec
@@ -58,6 +62,8 @@ type DeleteSandboxOptions struct {
 	User    string
 	Quota   *quotaspec.QuotaSpec
 }
+
+const sandboxDeleteTimeout = 30 * time.Second
 
 // quotaAdmission builds a SandboxAdmission that enforces the given quota spec via
 // the manager's QuotaEnforcer. Returns nil when enforcement is not applicable.
@@ -118,6 +124,33 @@ func preserveTypedError(err error, contextMsg string) error {
 	return managererrors.NewError(managererrors.ErrorInternal, "%s: %v", contextMsg, err)
 }
 
+func classifyNetworkError(err error) error {
+	if errors.Is(err, infra.ErrNetworkPolicyUnavailable) {
+		return managererrors.NewError(managererrors.ErrorUnavailable, "%v", err)
+	}
+	if errors.Is(err, infra.ErrNetworkPolicyConflict) {
+		return managererrors.NewError(managererrors.ErrorConflict, "%v", err)
+	}
+	return managererrors.NewError(managererrors.ErrorInternal, "failed to reconcile sandbox network: %v", err)
+}
+
+// UpdateSandboxNetwork reconciles protocol-independent desired network state.
+func (m *SandboxManager) UpdateSandboxNetwork(ctx context.Context, sandbox infra.Sandbox, desired infra.SandboxNetworkConfig) error {
+	if err := sandbox.UpdateNetworkPolicy(ctx, desired); err != nil {
+		return classifyNetworkError(err)
+	}
+	return nil
+}
+
+// GetSandboxNetwork returns the persisted desired network state.
+func (m *SandboxManager) GetSandboxNetwork(ctx context.Context, sandbox infra.Sandbox) (*infra.SandboxNetworkConfig, error) {
+	state, err := sandbox.SelectNetworkPolicy(ctx)
+	if err != nil {
+		return nil, managererrors.NewError(managererrors.ErrorInternal, "failed to read sandbox network: %v", err)
+	}
+	return state, nil
+}
+
 // ClaimSandbox attempts to lock a Pod and assign it to the current caller.
 //
 // Two counters are recorded on failure paths and they have distinct semantics
@@ -132,12 +165,18 @@ func (m *SandboxManager) ClaimSandbox(ctx context.Context, opts ClaimSandboxOpti
 	log := klog.FromContext(ctx)
 	infraOpts := opts.Infra
 	infraOpts.Admission = m.quotaAdmission(infraOpts.User, opts.Quota)
+	infraOpts.Network = opts.Network
 
 	if !m.infra.HasTemplate(ctx, infra.HasTemplateOptions{Namespace: infraOpts.Namespace, Name: infraOpts.Template}) {
 		// Template lookup failed before any sandbox was picked, so lock_type is unknown.
 		sandboxClaimCreationResponses.WithLabelValues(infraOpts.Namespace, "failure").Inc()
 		sandboxClaimTotal.WithLabelValues(infraOpts.Namespace, "failure", "unknown").Inc()
 		return nil, managererrors.NewError(managererrors.ErrorNotFound, "template %s not found", infraOpts.Template)
+	}
+	if opts.Network != nil {
+		if err := m.infra.ValidateNetworkPolicy(ctx, *opts.Network); err != nil {
+			return nil, classifyNetworkError(err)
+		}
 	}
 	sandbox, claimMetrics, err := m.infra.ClaimSandbox(ctx, infraOpts)
 	span.SetAttributes(
@@ -147,6 +186,9 @@ func (m *SandboxManager) ClaimSandbox(ctx context.Context, opts ClaimSandboxOpti
 	)
 	if err != nil {
 		log.Error(err, "failed to claim sandbox", "metrics", claimMetrics.String())
+		if sandbox != nil {
+			m.deleteRouteAndSync(ctx, sandbox)
+		}
 		// claimMetrics may carry the actual lock_type even on failure; fall back to
 		// "unknown" only when infra never reached the lock step.
 		lockType := string(claimMetrics.LockType)
@@ -157,7 +199,6 @@ func (m *SandboxManager) ClaimSandbox(ctx context.Context, opts ClaimSandboxOpti
 		sandboxClaimTotal.WithLabelValues(infraOpts.Namespace, "failure", lockType).Inc()
 		return nil, preserveTypedError(err, "failed to claim sandbox")
 	}
-
 	// Success: Record metrics
 	sandboxClaimCreationResponses.WithLabelValues(sandbox.GetNamespace(), "success").Inc()
 
@@ -184,14 +225,22 @@ func (m *SandboxManager) CloneSandbox(ctx context.Context, opts CloneSandboxOpti
 	log := klog.FromContext(ctx)
 	infraOpts := opts.Infra
 	infraOpts.Admission = m.quotaAdmission(infraOpts.User, opts.Quota)
+	infraOpts.Network = opts.Network
+	if opts.Network != nil {
+		if err := m.infra.ValidateNetworkPolicy(ctx, *opts.Network); err != nil {
+			return nil, classifyNetworkError(err)
+		}
+	}
 
 	sandbox, cloneMetrics, err := m.infra.CloneSandbox(ctx, infraOpts)
 	if err != nil {
 		log.Error(err, "failed to clone sandbox", "metrics", cloneMetrics)
+		if sandbox != nil {
+			m.deleteRouteAndSync(ctx, sandbox)
+		}
 		sandboxCloneTotal.WithLabelValues(infraOpts.Namespace, "failure").Inc()
 		return nil, preserveTypedError(err, "failed to clone sandbox")
 	}
-
 	// Clone-specific metrics
 	sandboxCloneDuration.WithLabelValues(sandbox.GetNamespace()).Observe(cloneMetrics.Total.Seconds())
 	sandboxCloneTotal.WithLabelValues(sandbox.GetNamespace(), "success").Inc()
@@ -415,10 +464,10 @@ func (m *SandboxManager) DeleteSandbox(ctx context.Context, opts DeleteSandboxOp
 	sbx := opts.Sandbox
 
 	if sbx.IsRecycleEnabled() && sbx.Phase() == string(v1alpha1.SandboxRunning) {
-		log.Info("sandbox is recycle-enabled, triggering recycle instead of deletion")
+		log.Info("sandbox is recycle-enabled, clearing network state before recycling")
 		start := time.Now()
 		if err := sbx.TriggerRecycle(ctx); err != nil {
-			log.Error(err, "failed to trigger recycle, falling back to delete")
+			log.Error(err, "failed to clear network state and trigger recycle, falling back to delete")
 			sandboxRecycleResponses.WithLabelValues(sbx.GetNamespace(), "failure").Inc()
 		} else {
 			sandboxRecycleResponses.WithLabelValues(sbx.GetNamespace(), "success").Inc()
@@ -432,7 +481,9 @@ func (m *SandboxManager) DeleteSandbox(ctx context.Context, opts DeleteSandboxOp
 	span.SetAttributes(attribute.Bool(tracing.AttrReuseTriggered, false))
 
 	start := time.Now()
-	if err := sbx.Kill(ctx); err != nil {
+	deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sandboxDeleteTimeout)
+	defer cancel()
+	if err := sbx.Kill(deleteCtx); err != nil {
 		log.Error(err, "failed to delete sandbox")
 		sandboxDeleteResponses.WithLabelValues(sbx.GetNamespace(), "failure").Inc()
 		return err

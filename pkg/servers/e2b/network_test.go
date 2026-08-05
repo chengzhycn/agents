@@ -25,11 +25,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentsv1alpha1 "github.com/openkruise/agents/api/v1alpha1"
 	"github.com/openkruise/agents/pkg/cache"
+	"github.com/openkruise/agents/pkg/sandbox-manager/infra"
 	"github.com/openkruise/agents/pkg/servers/e2b/keys"
 	"github.com/openkruise/agents/pkg/servers/e2b/models"
 )
@@ -103,6 +105,11 @@ func TestValidateDenyOut(t *testing.T) {
 		{
 			name:        "all-traffic CIDR is valid",
 			denyOut:     []string{"0.0.0.0/0"},
+			expectError: "",
+		},
+		{
+			name:        "denyOut accepts exactly max entries",
+			denyOut:     generateCIDREntries(maxNetworkEntriesPerList),
 			expectError: "",
 		},
 		{
@@ -210,6 +217,11 @@ func TestValidateAllowOut(t *testing.T) {
 			name:        "invalid entry mixed with valid rejected",
 			allowOut:    []string{"10.0.0.0/8", ">>>bad"},
 			expectError: "invalid allowOut entry",
+		},
+		{
+			name:        "allowOut accepts exactly max entries",
+			allowOut:    generateCIDREntries(maxNetworkEntriesPerList),
+			expectError: "",
 		},
 		{
 			name:        "allowOut exceeds max entries",
@@ -381,6 +393,13 @@ func TestValidateAndBuildNetworkConfig(t *testing.T) {
 			wantNil:     true,
 			expectError: "denyOut list exceeds maximum",
 		},
+		{
+			name: "duplicates are removed before enforcing the limit",
+			network: &models.SandboxNetworkConfig{
+				AllowOut: append(generateCIDREntries(maxNetworkEntriesPerList), "10.0.0.0/24"),
+			},
+			wantAllow: generateCIDREntries(maxNetworkEntriesPerList),
+		},
 	}
 
 	for _, tt := range tests {
@@ -522,6 +541,20 @@ func TestUpdateSandboxNetwork_SandboxNotFound(t *testing.T) {
 func TestUpdateSandboxNetwork_Success(t *testing.T) {
 	controller, _, teardown := Setup(t)
 	defer teardown()
+	fc := getTestCRClient(controller)
+	require.NoError(t, fc.Create(t.Context(), &agentsv1alpha1.GlobalTrafficPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "e2b-deny-internet"},
+		Spec: agentsv1alpha1.TrafficPolicySpec{
+			Priority: 900,
+			Selector: metav1.LabelSelector{MatchLabels: map[string]string{
+				agentsv1alpha1.LabelAllowInternetAccess: agentsv1alpha1.False,
+			}},
+			Egress: &agentsv1alpha1.TrafficPolicyDirection{Rules: []agentsv1alpha1.TrafficPolicyRule{{
+				Action: agentsv1alpha1.RuleActionReject,
+				To:     []agentsv1alpha1.TrafficPolicyPeer{{CIDR: "0.0.0.0/0"}},
+			}}},
+		},
+	}))
 	templateName := "test-network-template"
 	cleanup := CreateSandboxPool(t, controller, templateName, 10)
 	defer cleanup()
@@ -588,7 +621,6 @@ func TestUpdateSandboxNetwork_Success(t *testing.T) {
 			assert.Equal(t, tt.expectCode, resp.Code)
 
 			// Verify TrafficPolicy CR state matches expectations.
-			fc := getTestCRClient(controller)
 			tpList := &agentsv1alpha1.TrafficPolicyList{}
 			listErr := fc.List(t.Context(), tpList,
 				ctrlclient.InNamespace(Namespace),
@@ -600,6 +632,49 @@ func TestUpdateSandboxNetwork_Success(t *testing.T) {
 			} else {
 				assert.Empty(t, tpList.Items, "expected no TrafficPolicy CRs")
 			}
+
+			sandbox, getErr := controller.manager.GetSandbox(t.Context(), user.ID.String(), liveSandboxStates, infra.GetSandboxOptions{
+				Namespace: "",
+				SandboxID: sandboxID,
+			})
+			require.NoError(t, getErr)
+			expectedInternet := agentsv1alpha1.True
+			if tt.req.AllowInternetAccess != nil && !*tt.req.AllowInternetAccess {
+				expectedInternet = agentsv1alpha1.False
+			}
+			assert.Equal(t, expectedInternet, sandbox.GetLabels()[agentsv1alpha1.LabelAllowInternetAccess])
+			assert.Equal(t, expectedInternet, sandbox.GetPodLabels()[agentsv1alpha1.LabelAllowInternetAccess])
+			assert.NotEmpty(t, sandbox.GetAnnotations()[agentsv1alpha1.AnnotationE2BNetworkConfig])
+
+			describeResp, describeErr := controller.DescribeSandbox(NewRequest(t, nil, nil, map[string]string{
+				"sandboxID": sandboxID,
+			}, user))
+			require.Nil(t, describeErr)
+			require.NotNil(t, describeResp.Body.AllowInternetAccess)
+			assert.Equal(t, expectedInternet == agentsv1alpha1.True, *describeResp.Body.AllowInternetAccess)
+			require.NotNil(t, describeResp.Body.Network)
+			assert.Equal(t, tt.req.AllowOut, describeResp.Body.Network.AllowOut)
+			assert.Equal(t, tt.req.DenyOut, describeResp.Body.Network.DenyOut)
 		})
 	}
+}
+
+func TestCreateSandboxNetwork_GlobalFallbackUnavailable(t *testing.T) {
+	controller, _, teardown := Setup(t)
+	defer teardown()
+	cleanup := CreateSandboxPool(t, controller, "test-network-no-global-fallback", 1)
+	defer cleanup()
+	user := &models.CreatedTeamAPIKey{ID: keys.AdminKeyID, Key: InitKey, Name: "admin"}
+
+	response, apiErr := controller.CreateSandbox(NewRequest(t, nil, models.NewSandboxRequest{
+		TemplateID:          "test-network-no-global-fallback",
+		AllowInternetAccess: ptr.To(false),
+		Metadata: map[string]string{
+			models.ExtensionKeySkipInitRuntime: agentsv1alpha1.True,
+		},
+	}, nil, user))
+
+	require.NotNil(t, apiErr)
+	assert.Equal(t, http.StatusServiceUnavailable, apiErr.Code)
+	assert.Nil(t, response.Body)
 }

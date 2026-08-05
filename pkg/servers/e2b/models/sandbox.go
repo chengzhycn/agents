@@ -48,6 +48,7 @@ type Sandbox struct {
 	Alias                        string                `json:"alias"`
 	Metadata                     map[string]string     `json:"metadata"`
 	State                        string                `json:"state"`
+	AllowInternetAccess          *bool                 `json:"allowInternetAccess,omitempty"`
 	Network                      *SandboxNetworkConfig `json:"network,omitempty"`
 }
 

@@ -1368,7 +1368,7 @@ func TestSandbox_TriggerRecycle(t *testing.T) {
 	tests := []struct {
 		name               string
 		initialAnnotations map[string]string
-		patchInterceptor   func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error
+		updateInterceptor  func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error
 		expectError        string
 	}{
 		{
@@ -1380,12 +1380,12 @@ func TestSandbox_TriggerRecycle(t *testing.T) {
 			initialAnnotations: map[string]string{"existing": "value"},
 		},
 		{
-			name:               "patch error returns error",
+			name:               "update error returns error",
 			initialAnnotations: nil,
-			patchInterceptor: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-				return errors.New("forced patch error")
+			updateInterceptor: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				return errors.New("forced update error")
 			},
-			expectError: "forced patch error",
+			expectError: "forced update error",
 		},
 	}
 
@@ -1404,8 +1404,8 @@ func TestSandbox_TriggerRecycle(t *testing.T) {
 			}
 			builder = builder.WithStatusSubresource(&v1alpha1.Sandbox{})
 			builder = builder.WithObjects(sbx)
-			if tt.patchInterceptor != nil {
-				builder = builder.WithInterceptorFuncs(interceptor.Funcs{Patch: tt.patchInterceptor})
+			if tt.updateInterceptor != nil {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{Update: tt.updateInterceptor})
 			}
 			fc := builder.Build()
 

@@ -57,6 +57,8 @@ type ClaimSandboxOptions struct {
 	PreCheck func(sandbox Sandbox) error `json:"-"`
 	// Set Modifier to modify the Sandbox before it is updated
 	Modifier func(sandbox Sandbox) `json:"-"`
+	// Network is reconciled after locking and before runtime initialization.
+	Network *SandboxNetworkConfig `json:"-"`
 	// ReserveFailedSandboxFor controls how long failed sandboxes are kept for debugging.
 	//   nil                          — backend default (DefaultReserveFailedSandboxFor)
 	//   ReserveFailedSandboxNever    — delete immediately
@@ -97,17 +99,19 @@ type ClaimSandboxOptions struct {
 }
 
 type CloneSandboxOptions struct {
-	Namespace          string                  `json:"namespace,omitempty"`
-	User               string                  `json:"user"`
-	CheckPointID       string                  `json:"checkPointID"`
-	LockString         string                  `json:"lockString"`
-	Admission          *SandboxAdmission       `json:"-"`
-	WaitReadyTimeout   time.Duration           `json:"waitReadyTimeout"`
-	CloneTimeout       time.Duration           `json:"cloneTimeout"`
-	CSIMount           *config.CSIMountOptions `json:"CSIMount"`
-	Modifier           func(sbx Sandbox)       `json:"-"`
-	CreateLimiter      *rate.Limiter           `json:"-"`
-	SkipWaitCheckpoint bool                    `json:"skipWaitCheckpoint"`
+	Namespace        string                  `json:"namespace,omitempty"`
+	User             string                  `json:"user"`
+	CheckPointID     string                  `json:"checkPointID"`
+	LockString       string                  `json:"lockString"`
+	Admission        *SandboxAdmission       `json:"-"`
+	WaitReadyTimeout time.Duration           `json:"waitReadyTimeout"`
+	CloneTimeout     time.Duration           `json:"cloneTimeout"`
+	CSIMount         *config.CSIMountOptions `json:"CSIMount"`
+	Modifier         func(sbx Sandbox)       `json:"-"`
+	// Network is reconciled immediately after creation and before readiness/runtime initialization.
+	Network            *SandboxNetworkConfig `json:"-"`
+	CreateLimiter      *rate.Limiter         `json:"-"`
+	SkipWaitCheckpoint bool                  `json:"skipWaitCheckpoint"`
 	// See ReserveFailedSandboxFor on ClaimSandboxOptions.
 	ReserveFailedSandboxFor *time.Duration `json:"reserveFailedSandboxFor"`
 	// Name sets ObjectMeta.Name on the cloned sandbox (exact name).

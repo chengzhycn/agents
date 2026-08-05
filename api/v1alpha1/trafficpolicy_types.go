@@ -163,7 +163,7 @@ type TrafficPolicyDirection struct {
 // +kubebuilder:validation:XValidation:rule="has(self.ingress) || has(self.egress)",message="at least one of ingress or egress must be specified"
 type TrafficPolicySpec struct {
 	// Priority determines the evaluation order when multiple TrafficPolicies
-	// match the same pod. Higher values are evaluated first. When two
+	// match the same pod. Lower values are evaluated first. When two
 	// policies share the same priority, the result is implementation-defined.
 	//
 	// +optional

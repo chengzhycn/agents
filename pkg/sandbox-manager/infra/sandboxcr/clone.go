@@ -152,8 +152,16 @@ func CloneSandbox(ctx context.Context, opts infra.CloneSandboxOptions, cache inf
 	}
 	created := sbx
 	defer func() {
-		clearFailedSandbox(ctx, created, err, opts.ReserveFailedSandboxFor, opts.Admission, opts.LockString)
+		if cleanupErr := clearFailedSandbox(ctx, created, err, opts.ReserveFailedSandboxFor, opts.Admission, opts.LockString); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
 	}()
+	if opts.Network != nil {
+		if err = sbx.UpdateNetworkPolicy(ctx, *opts.Network); err != nil {
+			err = fmt.Errorf("%w: %w", infra.ErrNetworkPolicySetup, err)
+			return
+		}
+	}
 
 	// Step 4: wait for sandbox ready
 	if metrics, err = cloneWaitSandboxReady(ctx, sbx, opts, cache, metrics); err != nil {

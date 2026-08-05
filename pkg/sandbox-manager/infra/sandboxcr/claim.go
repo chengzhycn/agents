@@ -194,6 +194,9 @@ func TryClaimSandbox(ctx context.Context, opts infra.ClaimSandboxOptions, pickCa
 	opts.LockString = chooseLockString(opts.Admission, opts.LockString)
 	defer func() {
 		freeWorkerOnce()
+		if cleanupErr := clearFailedSandbox(ctx, claimed, err, opts.ReserveFailedSandboxFor, opts.Admission, opts.LockString); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
 		if err != nil {
 			key := pickedSandboxKey
 			if claimed == nil {
@@ -203,7 +206,6 @@ func TryClaimSandbox(ctx context.Context, opts infra.ClaimSandboxOptions, pickCa
 		}
 		metrics.LastError = err
 		log.Info("try claim sandbox result", "metrics", metrics.String())
-		clearFailedSandbox(ctx, claimed, err, opts.ReserveFailedSandboxFor, opts.Admission, opts.LockString)
 	}()
 	// Step 1: Pick an available sandbox
 	var sbx *Sandbox
@@ -320,7 +322,11 @@ func lockPickedSandbox(ctx context.Context, sbx *Sandbox, lockType infra.LockTyp
 func runClaimPostProcesses(ctx context.Context, sbx *Sandbox, lockType infra.LockType, opts infra.ClaimSandboxOptions,
 	cache infracache.Provider, metrics *infra.ClaimMetrics) error {
 	log := klog.FromContext(ctx)
-
+	if opts.Network != nil {
+		if err := sbx.UpdateNetworkPolicy(ctx, *opts.Network); err != nil {
+			return fmt.Errorf("%w: %w", infra.ErrNetworkPolicySetup, err)
+		}
+	}
 	if lockType == infra.LockTypeCreate || lockType == infra.LockTypeSpeculate || opts.InplaceUpdate != nil {
 		log.Info("should wait for sandbox ready", "inplaceUpdate", opts.InplaceUpdate != nil)
 		var err error
@@ -415,11 +421,14 @@ func runClaimPostProcesses(ctx context.Context, sbx *Sandbox, lockType infra.Loc
 
 // clearFailedSandbox cleans up (or reserves) a failed sandbox according to
 // reserveFor. A nil reserveFor falls back to DefaultReserveFailedSandboxFor.
-func clearFailedSandbox(ctx context.Context, sbx infra.Sandbox, err error, reserveFor *time.Duration, admission *infra.SandboxAdmission, lockString string) {
+func clearFailedSandbox(ctx context.Context, sbx infra.Sandbox, err error, reserveFor *time.Duration, admission *infra.SandboxAdmission, lockString string) error {
 	if err == nil || sbx == nil {
-		return
+		return nil
 	}
 	effective := ptr.Deref(reserveFor, DefaultReserveFailedSandboxFor)
+	if errors.Is(err, infra.ErrNetworkPolicySetup) {
+		effective = 0
+	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultCleanupTimeout)
 	defer cancel()
 	log := klog.FromContext(cleanupCtx).WithValues("sandbox", klog.KObj(sbx))
@@ -429,11 +438,13 @@ func clearFailedSandbox(ctx context.Context, sbx infra.Sandbox, err error, reser
 		// Keep any existing ShutdownTime as the original upper bound for debug retention.
 		if updateErr := reserveFailedSandbox(cleanupCtx, sbx, timeoututils.Options{}); updateErr != nil {
 			log.Error(updateErr, "failed to mark failed sandbox as reserved, deleting it instead")
-			if deleteFailedSandbox(cleanupCtx, sbx, log) {
+			if deleteErr := deleteFailedSandbox(cleanupCtx, sbx, log); deleteErr == nil {
 				releaseAdmission(ctx, admission, lockString)
+			} else {
+				return errors.Join(updateErr, deleteErr)
 			}
 		}
-		return
+		return nil
 	}
 
 	if effective > 0 {
@@ -443,17 +454,21 @@ func clearFailedSandbox(ctx context.Context, sbx infra.Sandbox, err error, reser
 			ShutdownTime: shutdownTime,
 		}); updateErr != nil {
 			log.Error(updateErr, "failed to reserve failed sandbox, deleting it instead")
-			if deleteFailedSandbox(cleanupCtx, sbx, log) {
+			if deleteErr := deleteFailedSandbox(cleanupCtx, sbx, log); deleteErr == nil {
 				releaseAdmission(ctx, admission, lockString)
+			} else {
+				return errors.Join(updateErr, deleteErr)
 			}
 		}
-		return
+		return nil
 	}
 
 	log.Info("the failed sandbox will be deleted", "reason", err)
-	if deleteFailedSandbox(cleanupCtx, sbx, log) {
-		releaseAdmission(ctx, admission, lockString)
+	if deleteErr := deleteFailedSandbox(cleanupCtx, sbx, log); deleteErr != nil {
+		return deleteErr
 	}
+	releaseAdmission(ctx, admission, lockString)
+	return nil
 }
 
 func reserveFailedSandbox(ctx context.Context, sbx infra.Sandbox, opts timeoututils.Options) error {
@@ -479,17 +494,17 @@ func reserveFailedSandbox(ctx context.Context, sbx infra.Sandbox, opts timeoutut
 	return err
 }
 
-func deleteFailedSandbox(ctx context.Context, sbx infra.Sandbox, log klog.Logger) bool {
+func deleteFailedSandbox(ctx context.Context, sbx infra.Sandbox, log klog.Logger) error {
 	if killErr := sbx.Kill(ctx); killErr != nil {
 		if apierrors.IsNotFound(killErr) {
 			log.Info("sandbox already deleted")
-			return true
+			return nil
 		}
 		log.Error(killErr, "failed to delete failed sandbox")
-		return false
+		return fmt.Errorf("failed to delete failed sandbox: %w", killErr)
 	}
 	log.Info("sandbox deleted")
-	return true
+	return nil
 }
 
 func getPickKey(sbx *v1alpha1.Sandbox) string {

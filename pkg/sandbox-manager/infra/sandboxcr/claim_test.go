@@ -1027,6 +1027,40 @@ func TestClearFailedSandboxReserveUpdateFailureDeletesSandbox(t *testing.T) {
 	}
 }
 
+func TestClearFailedSandboxNetworkSetupFailureIgnoresRetention(t *testing.T) {
+	sbx := createTestSandboxWithDefaults("test-network-failure", "default")
+	testCache, fc := newRetryUpdateTestCache(t, sbx, sbx.DeepCopy(), nil)
+	err := fmt.Errorf("%w: TrafficPolicy creation failed", infra.ErrNetworkPolicySetup)
+
+	clearFailedSandbox(t.Context(), AsSandbox(sbx, testCache), err, ptr.To(consts.ReserveFailedSandboxForever), nil, "")
+
+	got := &v1alpha1.Sandbox{}
+	getErr := fc.Get(t.Context(), client.ObjectKeyFromObject(sbx), got)
+	assert.True(t, apierrors.IsNotFound(getErr))
+}
+
+func TestClearFailedSandboxNetworkSetupReportsDeleteFailure(t *testing.T) {
+	sbx := createTestSandboxWithDefaults("test-network-delete-failure", "default")
+	testCache, _ := newRetryUpdateTestCache(t, sbx, sbx.DeepCopy(), nil)
+	originalDelete := DefaultDeleteSandbox
+	DefaultDeleteSandbox = func(context.Context, *v1alpha1.Sandbox, client.Client) error {
+		return errors.New("forced delete failure")
+	}
+	defer func() { DefaultDeleteSandbox = originalDelete }()
+
+	err := clearFailedSandbox(
+		t.Context(),
+		AsSandbox(sbx, testCache),
+		fmt.Errorf("%w: TrafficPolicy creation failed", infra.ErrNetworkPolicySetup),
+		ptr.To(consts.ReserveFailedSandboxForever),
+		nil,
+		"",
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced delete failure")
+}
+
 func TestCheckSandboxInplaceUpdate(t *testing.T) {
 	utestutils.InitLogOutput()
 	tests := []struct {

@@ -18,6 +18,7 @@ package infra
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -32,6 +33,10 @@ import (
 )
 
 const bytesPerMiB = int64(1024 * 1024)
+
+var ErrNetworkPolicyUnavailable = errors.New("required global network policy is unavailable")
+var ErrNetworkPolicyConflict = errors.New("sandbox network update conflicted with another request")
+var ErrNetworkPolicySetup = errors.New("sandbox network setup failed")
 
 type ResourceList struct {
 	CPUMilli   int64
@@ -207,8 +212,9 @@ type VolumeInfo struct {
 }
 
 type SandboxNetworkConfig struct {
-	AllowOut []string
-	DenyOut  []string
+	AllowInternetAccess bool     `json:"allowInternetAccess"`
+	AllowOut            []string `json:"allowOut,omitempty"`
+	DenyOut             []string `json:"denyOut,omitempty"`
 }
 
 type Builder interface {
@@ -227,6 +233,7 @@ type Infrastructure interface {
 	SelectSucceededCheckpoints(ctx context.Context, opts SelectSucceededCheckpointsOptions) ([]CheckpointInfo, error)
 	ClaimSandbox(ctx context.Context, opts ClaimSandboxOptions) (Sandbox, ClaimMetrics, error)
 	CloneSandbox(ctx context.Context, opts CloneSandboxOptions) (Sandbox, CloneMetrics, error)
+	ValidateNetworkPolicy(ctx context.Context, network SandboxNetworkConfig) error
 	DeleteCheckpoint(ctx context.Context, opts DeleteCheckpointOptions) error
 	CreateVolume(ctx context.Context, opts CreateVolumeOptions) (*VolumeInfo, error)
 	ListVolumes(ctx context.Context, opts ListVolumesOptions) ([]*VolumeInfo, error)

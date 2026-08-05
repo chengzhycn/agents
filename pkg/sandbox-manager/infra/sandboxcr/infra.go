@@ -178,6 +178,9 @@ func (i *Infra) ClaimSandbox(ctx context.Context, opts infra.ClaimSandboxOptions
 		metrics.Retries++
 		log.Info("try to claim sandbox", "retries", metrics.Retries)
 		claimed, tryMetrics, claimErr := TryClaimSandbox(claimCtx, opts, &i.pickCache, i.Cache, i.claimLockChannel, i.createLimiter)
+		if claimed != nil {
+			claimedSandbox = claimed
+		}
 		metrics.Total += tryMetrics.Total
 		metrics.Wait += tryMetrics.Wait
 		metrics.PickAndLock += tryMetrics.PickAndLock
@@ -192,7 +195,6 @@ func (i *Infra) ClaimSandbox(ctx context.Context, opts infra.ClaimSandboxOptions
 			metrics.LastError = tryMetrics.LastError
 		}
 		if claimErr == nil {
-			claimedSandbox = claimed
 			return true, nil
 		}
 		metrics.RetryCost += tryMetrics.Total
@@ -210,6 +212,9 @@ func (i *Infra) ClaimSandbox(ctx context.Context, opts infra.ClaimSandboxOptions
 	finalErr := waitErr
 	if waitErr != nil && claimCtx.Err() == nil && lastErr != nil {
 		finalErr = lastErr
+	}
+	if finalErr != nil && !errors.Is(finalErr, infra.ErrNetworkPolicySetup) {
+		claimedSandbox = nil
 	}
 	return claimedSandbox, metrics, buildClaimError(finalErr, metrics.LastError, metrics.PickSandboxFailures)
 }
@@ -262,9 +267,11 @@ func (i *Infra) CloneSandbox(ctx context.Context, opts infra.CloneSandboxOptions
 	waitErr := wait.ExponentialBackoffWithContext(cloneCtx, createRetryBackoff(), func(context.Context) (bool, error) {
 		metrics.Retries++
 		cloned, tryMetrics, cloneErr := CloneSandbox(cloneCtx, attemptOpts, i.Cache)
+		if cloned != nil {
+			clonedSandbox = cloned
+		}
 		metrics.Merge(tryMetrics)
 		if cloneErr == nil {
-			clonedSandbox = cloned
 			return true, nil
 		}
 		metrics.LastError = cloneErr
@@ -283,6 +290,9 @@ func (i *Infra) CloneSandbox(ctx context.Context, opts infra.CloneSandboxOptions
 			finalErr = lastErr
 		}
 		log.Error(finalErr, "failed to clone sandbox", "metrics", metrics.String())
+		if errors.Is(finalErr, infra.ErrNetworkPolicySetup) {
+			return clonedSandbox, metrics, buildCloneError(finalErr)
+		}
 		return nil, metrics, buildCloneError(finalErr)
 	}
 	log.Info("sandbox cloned", "sandbox", klog.KObj(clonedSandbox), "metrics", metrics.String())

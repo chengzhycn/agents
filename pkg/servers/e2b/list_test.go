@@ -226,6 +226,9 @@ func TestListSandboxes(t *testing.T) {
 
 				assert.Equal(t, expectStates[i], sandbox.State)
 				sandbox.EnvdAccessToken = "" // token is not listed
+				// ListedSandbox does not expose detail-only network desired state.
+				sandbox.AllowInternetAccess = nil
+				sandbox.Network = nil
 				if tt.expectListed != nil && tt.expectListed(sandbox) {
 					expectedListed = append(expectedListed, *sandbox)
 				}

@@ -210,15 +210,43 @@ func (s *Sandbox) Kill(ctx context.Context) (err error) {
 	return DefaultDeleteSandbox(ctx, s.Sandbox, s.Cache.GetClient())
 }
 
-func (s *Sandbox) TriggerRecycle(ctx context.Context) error {
-	patch := client.MergeFrom(s.Sandbox.DeepCopy())
-	if s.Sandbox.Annotations == nil {
-		s.Sandbox.Annotations = make(map[string]string, 1)
+func (s *Sandbox) TriggerRecycle(ctx context.Context) (err error) {
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DefaultCleanupTimeout)
+	defer cancel()
+	operationID, err := s.acquireNetworkOperation(operationCtx)
+	if err != nil {
+		return err
 	}
-	s.Sandbox.Annotations[agentsv1alpha1.AnnotationCleanup] = agentsv1alpha1.True
-	// Inject trace context so the controller's recycle Reconcile is linked.
-	s.Sandbox.Annotations = tracing.InjectTraceContext(ctx, s.Sandbox.Annotations)
-	return s.Cache.GetClient().Patch(ctx, s.Sandbox, patch)
+	defer func() {
+		if err != nil {
+			// Keep the lease until expiry so a failed recycle cannot race a PUT
+			// before Manager's fail-safe deletion completes.
+			return
+		}
+		if releaseErr := s.releaseNetworkOperation(ctx, operationID); releaseErr != nil {
+			if err == nil {
+				err = releaseErr
+			} else {
+				err = fmt.Errorf("%w; failed to release network operation: %v", err, releaseErr)
+			}
+		}
+	}()
+	if err = s.updateNetworkPolicyLocked(operationCtx, infra.SandboxNetworkConfig{AllowInternetAccess: true}, operationID); err != nil {
+		return err
+	}
+	_, err = s.retryNetworkUpdate(operationCtx, func(latest *agentsv1alpha1.Sandbox) (bool, error) {
+		if currentNetworkOperationID(latest.Annotations[agentsv1alpha1.AnnotationE2BNetworkOperation]) != operationID {
+			return false, fmt.Errorf("%w: network operation ownership changed", infra.ErrNetworkPolicyConflict)
+		}
+		if latest.Annotations[agentsv1alpha1.AnnotationCleanup] == agentsv1alpha1.True {
+			return false, nil
+		}
+		latest.Annotations[agentsv1alpha1.AnnotationCleanup] = agentsv1alpha1.True
+		// Link the controller's recycle Reconcile to the initiating request.
+		latest.Annotations = tracing.InjectTraceContext(ctx, latest.Annotations)
+		return true, nil
+	})
+	return err
 }
 
 func (s *Sandbox) IsRecycleEnabled() bool {

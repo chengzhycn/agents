@@ -24,6 +24,7 @@ import (
 
 	"k8s.io/klog/v2"
 
+	managererrors "github.com/openkruise/agents/pkg/sandbox-manager/errors"
 	"github.com/openkruise/agents/pkg/sandbox-manager/infra"
 	"github.com/openkruise/agents/pkg/servers/e2b/models"
 	"github.com/openkruise/agents/pkg/servers/web"
@@ -32,7 +33,19 @@ import (
 
 // maxNetworkEntriesPerList caps entries per allowOut/denyOut list to prevent
 // oversized TrafficPolicy CRs from exhausting apiserver resources.
-const maxNetworkEntriesPerList = 100
+const maxNetworkEntriesPerList = 20
+
+func buildSandboxNetworkConfig(allowInternetAccess *bool, netConfig *models.SandboxNetworkConfig) infra.SandboxNetworkConfig {
+	config := infra.SandboxNetworkConfig{AllowInternetAccess: true}
+	if allowInternetAccess != nil {
+		config.AllowInternetAccess = *allowInternetAccess
+	}
+	if netConfig != nil {
+		config.AllowOut = netConfig.AllowOut
+		config.DenyOut = netConfig.DenyOut
+	}
+	return config
+}
 
 // validateAllowOut checks that allowOut entries are valid CIDR, IP, or FQDN.
 // Wildcard domains are not supported.
@@ -64,6 +77,22 @@ func validateDenyOut(denyOut []string) error {
 	return nil
 }
 
+func deduplicateNetworkEntries(entries []string) []string {
+	if len(entries) < 2 {
+		return entries
+	}
+	seen := make(map[string]struct{}, len(entries))
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if _, exists := seen[entry]; exists {
+			continue
+		}
+		seen[entry] = struct{}{}
+		result = append(result, entry)
+	}
+	return result
+}
+
 // validateAndBuildNetworkConfig is the single entry point for validating raw
 // network parameters and producing a normalized SandboxNetworkConfig ready for CR creation.
 func validateAndBuildNetworkConfig(netConfig *models.SandboxNetworkConfig) (*models.SandboxNetworkConfig, error) {
@@ -72,17 +101,22 @@ func validateAndBuildNetworkConfig(netConfig *models.SandboxNetworkConfig) (*mod
 		return nil, nil
 	}
 
-	// Step 1: Validate allowOut — entries must be CIDR, IP, or FQDN
-	if err := validateAllowOut(netConfig.AllowOut); err != nil {
+	normalized := &models.SandboxNetworkConfig{
+		AllowOut: deduplicateNetworkEntries(netConfig.AllowOut),
+		DenyOut:  deduplicateNetworkEntries(netConfig.DenyOut),
+	}
+
+	// Validate allowOut — entries must be CIDR, IP, or FQDN.
+	if err := validateAllowOut(normalized.AllowOut); err != nil {
 		return nil, err
 	}
 
-	// Step 2: Validate denyOut — domains are not supported in deny lists
-	if err := validateDenyOut(netConfig.DenyOut); err != nil {
+	// Validate denyOut — domains are not supported in deny lists.
+	if err := validateDenyOut(normalized.DenyOut); err != nil {
 		return nil, err
 	}
 
-	return netConfig, nil
+	return normalized, nil
 }
 
 // UpdateSandboxNetwork replaces the sandbox's network rules with the new configuration.
@@ -116,17 +150,11 @@ func (sc *Controller) UpdateSandboxNetwork(r *http.Request) (web.ApiResponse[str
 		return web.ApiResponse[struct{}]{}, apiErr
 	}
 
-	var cfg infra.SandboxNetworkConfig
-	if netConfig != nil {
-		cfg = infra.SandboxNetworkConfig{
-			AllowOut: netConfig.AllowOut,
-			DenyOut:  netConfig.DenyOut,
-		}
-	}
-	if err := sbx.UpdateNetworkPolicy(ctx, cfg); err != nil {
+	cfg := buildSandboxNetworkConfig(req.AllowInternetAccess, netConfig)
+	if err := sc.manager.UpdateSandboxNetwork(ctx, sbx, cfg); err != nil {
 		log.Error(err, "failed to reconcile network CRs")
 		return web.ApiResponse[struct{}]{}, &web.ApiError{
-			Code:    http.StatusInternalServerError,
+			Code:    mapManagerErrorStatus(err),
 			Message: fmt.Sprintf("Failed to update network: %v", err),
 		}
 	}
@@ -135,4 +163,15 @@ func (sc *Controller) UpdateSandboxNetwork(r *http.Request) (web.ApiResponse[str
 	return web.ApiResponse[struct{}]{
 		Code: http.StatusNoContent,
 	}, nil
+}
+
+func mapManagerErrorStatus(err error) int {
+	switch managererrors.GetErrCode(err) {
+	case managererrors.ErrorUnavailable:
+		return http.StatusServiceUnavailable
+	case managererrors.ErrorConflict:
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
 }
