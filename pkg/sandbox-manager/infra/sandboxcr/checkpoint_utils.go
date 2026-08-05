@@ -17,19 +17,10 @@ limitations under the License.
 package sandboxcr
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/openkruise/agents/api/v1alpha1"
 	"github.com/openkruise/agents/pkg/identity"
-)
-
-type jwtAuthSetting int
-
-const (
-	jwtAuthUnset jwtAuthSetting = iota
-	jwtAuthDisabled
-	jwtAuthEnabled
 )
 
 // necessaryAnnotationKeys defines the exact annotation keys that need to be
@@ -97,41 +88,15 @@ func RestoreAnnotationsFromCheckpoint(cp *v1alpha1.Checkpoint, sbx *v1alpha1.San
 }
 
 // restoreAnnotationsFromCheckpointForClone applies generic checkpoint
-// restoration plus the clone-specific JWT inheritance rule: an explicit
-// request may enable inherited JWT auth, but cannot disable it.
-func restoreAnnotationsFromCheckpointForClone(cp *v1alpha1.Checkpoint, sbx *v1alpha1.Sandbox) error {
-	checkpointSetting := parseJWTAuthSetting(cp.GetAnnotations())
-	requestSetting := parseJWTAuthSetting(sbx.GetAnnotations())
-
-	if checkpointSetting == jwtAuthEnabled && requestSetting == jwtAuthDisabled {
-		return fmt.Errorf("cannot disable JWT authentication inherited from checkpoint")
-	}
-
+// restoration plus clone request precedence for JWT authentication. An
+// explicitly provided request value overrides the restored checkpoint value;
+// an absent request inherits the checkpoint unchanged.
+func restoreAnnotationsFromCheckpointForClone(cp *v1alpha1.Checkpoint, sbx *v1alpha1.Sandbox) {
+	requestValue, requestProvided := sbx.GetAnnotations()[identity.AnnotationEnableJwtAuth]
 	RestoreAnnotationsFromCheckpoint(cp, sbx)
-	finalSetting := checkpointSetting
-	if requestSetting == jwtAuthEnabled || checkpointSetting == jwtAuthUnset {
-		finalSetting = requestSetting
+	if requestProvided {
+		annotations := sbx.GetAnnotations()
+		annotations[identity.AnnotationEnableJwtAuth] = requestValue
+		sbx.SetAnnotations(annotations)
 	}
-	annotations := sbx.GetAnnotations()
-	switch finalSetting {
-	case jwtAuthEnabled:
-		annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.True
-	case jwtAuthDisabled:
-		annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.False
-	default:
-		delete(annotations, identity.AnnotationEnableJwtAuth)
-	}
-	sbx.SetAnnotations(annotations)
-	return nil
-}
-
-func parseJWTAuthSetting(annotations map[string]string) jwtAuthSetting {
-	value, present := annotations[identity.AnnotationEnableJwtAuth]
-	if !present {
-		return jwtAuthUnset
-	}
-	if value == v1alpha1.True {
-		return jwtAuthEnabled
-	}
-	return jwtAuthDisabled
 }

@@ -1320,7 +1320,7 @@ func TestCloneSandbox(t *testing.T) {
 			},
 		},
 		{
-			name: "clone rejects disabling inherited JWT auth",
+			name: "clone request disables inherited JWT auth",
 			request: models.NewSandboxRequest{
 				TemplateID: checkpointID,
 				Timeout:    300,
@@ -1331,9 +1331,9 @@ func TestCloneSandbox(t *testing.T) {
 			checkpointAnnotations: map[string]string{
 				identity.AnnotationEnableJwtAuth: v1alpha1.True,
 			},
-			expectError: &web.ApiError{
-				Code:    http.StatusBadRequest,
-				Message: "cannot disable JWT authentication inherited from checkpoint",
+			postCheck: func(t *testing.T, resp *models.Sandbox, _ *Controller) {
+				assert.Empty(t, resp.TrafficAccessToken)
+				assert.Empty(t, resp.TrafficAccessTokenExpiration)
 			},
 		},
 		{

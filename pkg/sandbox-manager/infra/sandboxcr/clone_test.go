@@ -474,7 +474,6 @@ func TestPrepareSandboxFromCheckpoint_JWTAuthMerge(t *testing.T) {
 		checkpointSetting *string
 		requestSetting    *string
 		expectSetting     *string
-		expectError       string
 	}{
 		{name: "both unset"},
 		{name: "request explicitly disables", requestSetting: ptr.To(v1alpha1.False), expectSetting: ptr.To(v1alpha1.False)},
@@ -483,10 +482,10 @@ func TestPrepareSandboxFromCheckpoint_JWTAuthMerge(t *testing.T) {
 		{name: "request strengthens disabled checkpoint", checkpointSetting: ptr.To(v1alpha1.False), requestSetting: ptr.To(v1alpha1.True), expectSetting: ptr.To(v1alpha1.True)},
 		{name: "inherits enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), expectSetting: ptr.To(v1alpha1.True)},
 		{name: "request keeps enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), requestSetting: ptr.To(v1alpha1.True), expectSetting: ptr.To(v1alpha1.True)},
-		{name: "request cannot weaken enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), requestSetting: ptr.To(v1alpha1.False), expectError: "cannot disable JWT authentication inherited from checkpoint"},
-		{name: "non-standard request value disables", requestSetting: ptr.To("True"), expectSetting: ptr.To(v1alpha1.False)},
-		{name: "non-standard checkpoint value is disabled", checkpointSetting: ptr.To("1"), expectSetting: ptr.To(v1alpha1.False)},
-		{name: "non-standard request cannot weaken enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), requestSetting: ptr.To("True"), expectError: "cannot disable JWT authentication inherited from checkpoint"},
+		{name: "request disables enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), requestSetting: ptr.To(v1alpha1.False), expectSetting: ptr.To(v1alpha1.False)},
+		{name: "non-standard request value is preserved", requestSetting: ptr.To("True"), expectSetting: ptr.To("True")},
+		{name: "non-standard checkpoint value is inherited", checkpointSetting: ptr.To("1"), expectSetting: ptr.To("1")},
+		{name: "non-standard request overrides enabled checkpoint", checkpointSetting: ptr.To(v1alpha1.True), requestSetting: ptr.To("True"), expectSetting: ptr.To("True")},
 	}
 
 	for _, tt := range tests {
@@ -505,12 +504,6 @@ func TestPrepareSandboxFromCheckpoint_JWTAuthMerge(t *testing.T) {
 			}
 
 			sbx, _, err := prepareSandboxFromCheckpoint(t.Context(), opts, tmpl, cp, nil)
-			if tt.expectError != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.expectError)
-				assert.Equal(t, managererrors.ErrorBadRequest, managererrors.GetErrCode(err))
-				return
-			}
 			require.NoError(t, err)
 			value, present := sbx.GetAnnotations()[identity.AnnotationEnableJwtAuth]
 			if tt.expectSetting == nil {
