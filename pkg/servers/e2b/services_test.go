@@ -1289,13 +1289,13 @@ func TestCloneSandbox(t *testing.T) {
 			},
 		},
 		{
-			name: "clone success returns transient JWT traffic token",
+			name: "clone inherits JWT auth and returns transient traffic token",
 			request: models.NewSandboxRequest{
 				TemplateID: checkpointID,
 				Timeout:    300,
-				Metadata: map[string]string{
-					identity.AnnotationEnableJwtAuth: v1alpha1.True,
-				},
+			},
+			checkpointAnnotations: map[string]string{
+				identity.AnnotationEnableJwtAuth: v1alpha1.True,
 			},
 			setup: func(t *testing.T, _ *Controller, _ ctrlclient.Client) {
 				identity.RegisterProvider(identity.NewDefaultIdentityProvider())
