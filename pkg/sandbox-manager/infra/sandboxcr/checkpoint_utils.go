@@ -86,17 +86,3 @@ func RestoreAnnotationsFromCheckpoint(cp *v1alpha1.Checkpoint, sbx *v1alpha1.San
 	}
 	sbx.SetAnnotations(copyPreservedAnnotations(cpAnnotations, sbx.GetAnnotations()))
 }
-
-// restoreAnnotationsFromCheckpointForClone applies generic checkpoint
-// restoration plus clone request precedence for JWT authentication. An
-// explicitly provided request value overrides the restored checkpoint value;
-// an absent request inherits the checkpoint unchanged.
-func restoreAnnotationsFromCheckpointForClone(cp *v1alpha1.Checkpoint, sbx *v1alpha1.Sandbox) {
-	requestValue, requestProvided := sbx.GetAnnotations()[identity.AnnotationEnableJwtAuth]
-	RestoreAnnotationsFromCheckpoint(cp, sbx)
-	if requestProvided {
-		annotations := sbx.GetAnnotations()
-		annotations[identity.AnnotationEnableJwtAuth] = requestValue
-		sbx.SetAnnotations(annotations)
-	}
-}

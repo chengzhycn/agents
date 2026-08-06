@@ -327,8 +327,12 @@ func prepareSandboxFromCheckpoint(ctx context.Context, opts infra.CloneSandboxOp
 		sbx.Annotations[v1alpha1.AnnotationRuntimeAccessToken] = initRuntimeOpts.AccessToken
 		sbx.Annotations[v1alpha1.AnnotationInitRuntimeRequest] = cp.Annotations[v1alpha1.AnnotationInitRuntimeRequest]
 	}
-	// e.g., copy csi mount config from checkpoint to sandbox obj
-	restoreAnnotationsFromCheckpointForClone(cp, sbx.Sandbox)
+	requestJWTAuth, requestJWTAuthProvided := sbx.Annotations[identity.AnnotationEnableJwtAuth]
+	RestoreAnnotationsFromCheckpoint(cp, sbx.Sandbox)
+	// Explicit clone settings take precedence over values restored from the checkpoint.
+	if requestJWTAuthProvided {
+		sbx.Annotations[identity.AnnotationEnableJwtAuth] = requestJWTAuth
+	}
 	// When the clone request explicitly provides CSI mount configs, they take
 	// precedence over the csi-volume-config restored from the checkpoint. This
 	// keeps the persisted annotation consistent with the mount performed in the
