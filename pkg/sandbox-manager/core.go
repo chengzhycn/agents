@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infracache "github.com/openkruise/agents/pkg/cache"
+	"github.com/openkruise/agents/pkg/identity"
 	"github.com/openkruise/agents/pkg/peers"
 	"github.com/openkruise/agents/pkg/proxy"
 	"github.com/openkruise/agents/pkg/sandbox-manager/config"
@@ -78,12 +80,14 @@ func NewSandboxManagerBuilder(opts config.SandboxManagerOptions) *SandboxManager
 	opts = config.InitOptions(opts)
 	return &SandboxManagerBuilder{
 		instance: &SandboxManager{
-			proxy:              proxy.NewServer(opts),
-			memberlistBindPort: opts.MemberlistBindPort,
-			systemNamespace:    opts.SystemNamespace,
-			enableShortID:      opts.EnableShortSandboxID,
-			shortIDPrefix:      opts.ShortSandboxIDPrefix,
-			primary:            &primaryState{},
+			proxy:               proxy.NewServer(opts),
+			memberlistBindPort:  opts.MemberlistBindPort,
+			systemNamespace:     opts.SystemNamespace,
+			enableShortID:       opts.EnableShortSandboxID,
+			shortIDPrefix:       opts.ShortSandboxIDPrefix,
+			primary:             &primaryState{},
+			trafficTokenOptions: identity.TokenOptions{RequestedValidity: opts.TrafficAccessToken.Validity},
+			trafficTokenLimiter: newTrafficTokenLimiter(opts.TrafficAccessToken.RefreshMinInterval, time.Now),
 		},
 		opts: opts,
 	}
@@ -172,7 +176,9 @@ func (b *SandboxManagerBuilder) Build() (*SandboxManager, error) {
 			content.LabelValueMaxLength-sandboxid.ShortIDLength,
 		)
 	}
-
+	if err := config.ValidateTrafficAccessTokenOptions(b.opts.TrafficAccessToken); err != nil {
+		return nil, errors.NewError(errors.ErrorInternal, "invalid traffic access token options: %v", err)
+	}
 	// Build infra
 	if b.buildInfraFunc == nil {
 		return nil, errors.NewError(errors.ErrorInternal, "infra builder is not configured: call WithSandboxInfra or WithCustomInfra before Build")
@@ -237,6 +243,9 @@ type SandboxManager struct {
 	quota            QuotaEnforcer          // nil until InitQuota or builder injection
 	quotaAntiDrift   *quota.AntiDriftDriver // nil when Redis is not configured
 	quotaRedisClient RedisClient            // nil when Redis is not configured
+
+	trafficTokenOptions identity.TokenOptions
+	trafficTokenLimiter *trafficTokenLimiter
 }
 
 // InitQuota initializes the quota subsystem. Call after Build() so that m.infra is available.
