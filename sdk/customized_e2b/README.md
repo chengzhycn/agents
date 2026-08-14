@@ -60,15 +60,20 @@ When a Sandbox is configured for Traffic JWT authentication, the patch keeps
 its token in memory and refreshes it before expiration. Sync and async envd
 HTTP/RPC requests and code-interpreter Jupyter requests read the latest token
 immediately before sending. Concurrent refreshes for one Sandbox are combined
-into one request. Legacy opaque traffic tokens keep their existing behavior and
-do not enable expiration-based refresh.
+into one request, and a recent successful result is reused during the configured
+minimum refresh interval so multiple tokenless clients can bootstrap. Legacy
+opaque traffic tokens keep their existing behavior and do not enable
+expiration-based refresh.
 
-The async client also runs a proactive refresh task. `kill()`, async context
-manager exit, and `await sandbox.close_traffic_token_refresh()` cancel that
-task. A terminal `404` or `409` refresh response also stops it. Refresh failures
-continue using the previous token while it remains valid; once expired,
-data-plane calls fail locally with `TrafficAccessTokenExpired` instead of
-sending a known-invalid credential.
+Connect only resumes or extends the Sandbox and does not issue a token. A
+class-level `Sandbox.connect(sandbox_id)` checks the Sandbox metadata with
+`get_info()`; for JWT-protected Sandboxes without a token, the first data-plane
+request refreshes one before sending.
+
+Sync and async clients refresh on demand immediately before a data-plane
+request. Refresh failures continue using the previous token while it remains
+valid; once expired, data-plane calls fail locally with
+`TrafficAccessTokenExpired` instead of sending a known-invalid credential.
 
 An application can explicitly refresh a token when needed:
 
@@ -85,3 +90,7 @@ refresh support, before configuring a shorter
 `--traffic-access-token-validity` for existing JWT-authenticated workloads.
 Clients that do not refresh will lose data-plane access when a short-lived
 token expires.
+
+Deploy the lazy-Connect SDK behavior before upgrading sandbox-manager to a
+version that no longer issues Traffic JWTs from Connect. Older clients cannot
+recover a missing token when reconnecting by Sandbox ID.

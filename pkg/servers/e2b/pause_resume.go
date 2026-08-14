@@ -30,7 +30,6 @@ import (
 	"github.com/openkruise/agents/api/v1alpha1"
 	cacheutils "github.com/openkruise/agents/pkg/cache/utils"
 	"github.com/openkruise/agents/pkg/pausedretention"
-	sandboxmanager "github.com/openkruise/agents/pkg/sandbox-manager"
 	managererrors "github.com/openkruise/agents/pkg/sandbox-manager/errors"
 	"github.com/openkruise/agents/pkg/sandbox-manager/infra"
 	"github.com/openkruise/agents/pkg/servers/e2b/models"
@@ -323,19 +322,7 @@ func (sc *Controller) ConnectSandbox(r *http.Request) (web.ApiResponse[*models.S
 		return web.ApiResponse[*models.Sandbox]{}, withSandboxResourceContext(err, sbx)
 	}
 	log.Info("sandbox timeout updated")
-	trafficToken, issued, err := sc.manager.BootstrapTrafficAccessToken(ctx, sandboxmanager.RefreshTrafficAccessTokenOptions{
-		Namespace: sc.getNamespaceOfUser(user),
-		SandboxID: id,
-		User:      user.ID.String(),
-	})
-	if err != nil {
-		return web.ApiResponse[*models.Sandbox]{}, trafficTokenAPIError(err, sc.mgrOpts.TrafficAccessToken.RefreshMinInterval)
-	}
 	body := sc.convertToE2BSandbox(sbx, utils.GetAccessToken(sbx), domain)
-	if issued {
-		body.TrafficAccessToken = trafficToken.Token
-		body.TrafficAccessTokenExpiration = trafficToken.Expiration.UTC().Format(time.RFC3339)
-	}
 
 	return web.ApiResponse[*models.Sandbox]{
 		Code: statusCode,

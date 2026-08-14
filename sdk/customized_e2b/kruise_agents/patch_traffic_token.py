@@ -16,7 +16,6 @@ _TOKEN_REFRESH_SUPPORTED = Version("2.35.0") <= _E2B_VERSION < Version("2.38.0")
 if _TOKEN_REFRESH_SUPPORTED:
     import httpx
     from e2b.api import make_async_logging_event_hooks, make_logging_event_hooks
-    from e2b.api.client.types import Unset
     from e2b.envd import client_async as envd_client_async
     from e2b.envd import client_sync as envd_client_sync
     from e2b.sandbox_async.main import AsyncSandbox as E2BAsyncSandbox
@@ -40,8 +39,10 @@ if _TOKEN_REFRESH_SUPPORTED:
     )
 
 _TRAFFIC_TOKEN_HEADER = "e2b-traffic-access-token"
+_JWT_AUTH_METADATA_KEY = "security.agents.kruise.io/enable-jwt-auth"
 _SYNC_MANAGER_ATTRIBUTE = "_kruise_sync_traffic_token_manager"
 _ASYNC_MANAGER_ATTRIBUTE = "_kruise_async_traffic_token_manager"
+_REQUEST_HOOK_ATTRIBUTE = "_kruise_traffic_token_request_hook"
 _PATCHED = False
 
 if _TOKEN_REFRESH_SUPPORTED:
@@ -55,6 +56,12 @@ if _TOKEN_REFRESH_SUPPORTED:
     _original_async_sandbox_init = E2BAsyncSandbox.__init__
     _original_sync_connect = E2BSandbox.__dict__["connect"]
     _original_async_connect = E2BAsyncSandbox.__dict__["connect"]
+    _original_sync_cls_connect_sandbox = E2BSandbox.__dict__[
+        "_cls_connect_sandbox"
+    ].__func__
+    _original_async_cls_connect_sandbox = E2BAsyncSandbox.__dict__[
+        "_cls_connect_sandbox"
+    ].__func__
     _original_sync_jupyter_client = SandboxSync._client
     _original_async_jupyter_client = SandboxAsync._client
 
@@ -153,27 +160,66 @@ def _sandbox_init(self, *args, **kwargs) -> None:
     token = self.traffic_access_token
     if not token:
         return
-    config = self.connection_config
-    sandbox_id = self.sandbox_id
     try:
-        if isinstance(self, E2BAsyncSandbox):
-            manager = AsyncTrafficTokenManager(
-                token,
-                lambda: _async_refresh(config, sandbox_id),
-            )
-            setattr(self, _ASYNC_MANAGER_ATTRIBUTE, manager)
-            setattr(config, _ASYNC_MANAGER_ATTRIBUTE, manager)
-        else:
-            manager = TrafficTokenManager(
-                token,
-                lambda: _sync_refresh(config, sandbox_id),
-            )
-            setattr(self, _SYNC_MANAGER_ATTRIBUTE, manager)
-            setattr(config, _SYNC_MANAGER_ATTRIBUTE, manager)
+        _install_token_manager(self, token)
     except TrafficAccessTokenError:
         # Legacy providers may return opaque traffic tokens. They remain usable,
         # but cannot participate in expiration-based automatic refresh.
         return
+
+
+def _install_token_manager(self, token: str | None):
+    config = self.connection_config
+    sandbox_id = self.sandbox_id
+    if isinstance(self, E2BAsyncSandbox):
+        manager = AsyncTrafficTokenManager(
+            token,
+            lambda: _async_refresh(config, sandbox_id),
+        )
+        setattr(self, _ASYNC_MANAGER_ATTRIBUTE, manager)
+        setattr(config, _ASYNC_MANAGER_ATTRIBUTE, manager)
+    else:
+        manager = TrafficTokenManager(
+            token,
+            lambda: _sync_refresh(config, sandbox_id),
+        )
+        setattr(self, _SYNC_MANAGER_ATTRIBUTE, manager)
+        setattr(config, _SYNC_MANAGER_ATTRIBUTE, manager)
+    return manager
+
+
+def _requires_traffic_token(info) -> bool:
+    metadata = getattr(info, "metadata", None)
+    return isinstance(metadata, dict) and metadata.get(_JWT_AUTH_METADATA_KEY) == "true"
+
+
+def _install_lazy_token_manager(sandbox) -> None:
+    if sandbox.connection_config.debug or sandbox.traffic_access_token:
+        return
+    if getattr(sandbox, _SYNC_MANAGER_ATTRIBUTE, None) is not None:
+        return
+    if getattr(sandbox, _ASYNC_MANAGER_ATTRIBUTE, None) is not None:
+        return
+    _install_token_manager(sandbox, None)
+
+
+def _install_lazy_token_manager_if_required(sandbox, info) -> None:
+    if not sandbox.traffic_access_token and _requires_traffic_token(info):
+        _install_lazy_token_manager(sandbox)
+
+
+def _connect_sandbox_sync(cls, *args, **kwargs):
+    sandbox = _original_sync_cls_connect_sandbox(cls, *args, **kwargs)
+    if not sandbox.connection_config.debug and not sandbox.traffic_access_token:
+        _install_lazy_token_manager_if_required(sandbox, sandbox.get_info())
+    return sandbox
+
+
+async def _connect_sandbox_async(cls, *args, **kwargs):
+    sandbox = await _original_async_cls_connect_sandbox(cls, *args, **kwargs)
+    if not sandbox.connection_config.debug and not sandbox.traffic_access_token:
+        _install_lazy_token_manager_if_required(sandbox, await sandbox.get_info())
+    return sandbox
 
 
 def _traffic_access_token(self):
@@ -204,15 +250,19 @@ def _async_request_hook(config: ConnectionConfig):
 
 
 def _add_sync_request_hook(client: httpx.Client, config: ConnectionConfig) -> None:
-    if getattr(config, _SYNC_MANAGER_ATTRIBUTE, None) is not None:
-        client.event_hooks["request"].insert(0, _sync_request_hook(config))
+    if getattr(client, _REQUEST_HOOK_ATTRIBUTE, False):
+        return
+    client.event_hooks["request"].insert(0, _sync_request_hook(config))
+    setattr(client, _REQUEST_HOOK_ATTRIBUTE, True)
 
 
 def _add_async_request_hook(
     client: httpx.AsyncClient, config: ConnectionConfig
 ) -> None:
-    if getattr(config, _ASYNC_MANAGER_ATTRIBUTE, None) is not None:
-        client.event_hooks["request"].insert(0, _async_request_hook(config))
+    if getattr(client, _REQUEST_HOOK_ATTRIBUTE, False):
+        return
+    client.event_hooks["request"].insert(0, _async_request_hook(config))
+    setattr(client, _REQUEST_HOOK_ATTRIBUTE, True)
 
 
 def _make_sync_client_factory(original):
@@ -226,10 +276,7 @@ def _make_sync_client_factory(original):
 
 def _async_sandbox_init(self, *args, **kwargs) -> None:
     _original_async_sandbox_init(self, *args, **kwargs)
-    manager = getattr(self, _ASYNC_MANAGER_ATTRIBUTE, None)
-    if manager is not None:
-        _add_async_request_hook(self._envd_api, self.connection_config)
-        manager.start()
+    _add_async_request_hook(self._envd_api, self.connection_config)
 
 
 def _sync_jupyter_client(self) -> httpx.Client:
@@ -253,24 +300,28 @@ class _TrafficTokenInterceptor:
         ctx.request_headers[_TRAFFIC_TOKEN_HEADER] = token
 
     def intercept_unary_sync(self, call_next, request, ctx):
-        manager = getattr(self._config, _SYNC_MANAGER_ATTRIBUTE)
-        self._apply(ctx, manager.ensure_valid_token())
+        manager = getattr(self._config, _SYNC_MANAGER_ATTRIBUTE, None)
+        if manager is not None:
+            self._apply(ctx, manager.ensure_valid_token())
         return call_next(request, ctx)
 
     async def intercept_unary(self, call_next, request, ctx):
-        manager = getattr(self._config, _ASYNC_MANAGER_ATTRIBUTE)
-        self._apply(ctx, await manager.ensure_valid_token())
+        manager = getattr(self._config, _ASYNC_MANAGER_ATTRIBUTE, None)
+        if manager is not None:
+            self._apply(ctx, await manager.ensure_valid_token())
         return await call_next(request, ctx)
 
     def intercept_server_stream_sync(self, call_next, request, ctx) -> Iterator:
-        manager = getattr(self._config, _SYNC_MANAGER_ATTRIBUTE)
-        self._apply(ctx, manager.ensure_valid_token())
+        manager = getattr(self._config, _SYNC_MANAGER_ATTRIBUTE, None)
+        if manager is not None:
+            self._apply(ctx, manager.ensure_valid_token())
         return call_next(request, ctx)
 
     def intercept_server_stream(self, call_next, request, ctx) -> AsyncIterator:
         async def stream():
-            manager = getattr(self._config, _ASYNC_MANAGER_ATTRIBUTE)
-            self._apply(ctx, await manager.ensure_valid_token())
+            manager = getattr(self._config, _ASYNC_MANAGER_ATTRIBUTE, None)
+            if manager is not None:
+                self._apply(ctx, await manager.ensure_valid_token())
             inner = call_next(request, ctx)
             try:
                 async for item in inner:
@@ -285,15 +336,13 @@ class _TrafficTokenInterceptor:
 
 def _build_sync_interceptors(config: ConnectionConfig, base_url: str) -> list:
     interceptors = _original_build_sync_interceptors(config, base_url)
-    if getattr(config, _SYNC_MANAGER_ATTRIBUTE, None) is not None:
-        interceptors.insert(0, _TrafficTokenInterceptor(config))
+    interceptors.insert(0, _TrafficTokenInterceptor(config))
     return interceptors
 
 
 def _build_async_interceptors(config: ConnectionConfig, base_url: str) -> list:
     interceptors = _original_build_async_interceptors(config, base_url)
-    if getattr(config, _ASYNC_MANAGER_ATTRIBUTE, None) is not None:
-        interceptors.insert(0, _TrafficTokenInterceptor(config))
+    interceptors.insert(0, _TrafficTokenInterceptor(config))
     return interceptors
 
 
@@ -311,71 +360,36 @@ async def _refresh_async(self, force: bool = False) -> str | None:
     return await manager.ensure_valid_token(force=force)
 
 
-async def _close_async_refresh(self) -> None:
-    manager = getattr(self, _ASYNC_MANAGER_ATTRIBUTE, None)
-    if manager is not None:
-        await manager.stop()
-
-
 def _connect_sync(self, timeout=None, **opts):
     if self.connection_config.debug:
         return self
-    manager = getattr(self, _SYNC_MANAGER_ATTRIBUTE, None)
-
-    def connect():
-        response = SyncSandboxApi._cls_connect(
-            sandbox_id=self.sandbox_id,
-            timeout=timeout,
-            **self.connection_config.get_api_params(**opts),
-        )
-        token = response.traffic_access_token
-        if token is None or isinstance(token, Unset):
-            token = None
-        return response, token
-
-    if manager is None:
-        connect()
-    else:
-        manager.run_with_token_replacement(connect)
+    SyncSandboxApi._cls_connect(
+        sandbox_id=self.sandbox_id,
+        timeout=timeout,
+        **self.connection_config.get_api_params(**opts),
+    )
+    if (
+        not self.traffic_access_token
+        and getattr(self, _SYNC_MANAGER_ATTRIBUTE, None) is None
+    ):
+        _install_lazy_token_manager_if_required(self, self.get_info())
     return self
 
 
 async def _connect_async(self, timeout=None, **opts):
     if self.connection_config.debug:
         return self
-    manager = getattr(self, _ASYNC_MANAGER_ATTRIBUTE, None)
-
-    async def connect():
-        response = await AsyncSandboxApi._cls_connect(
-            sandbox_id=self.sandbox_id,
-            timeout=timeout,
-            **self.connection_config.get_api_params(**opts),
-        )
-        token = response.traffic_access_token
-        if token is None or isinstance(token, Unset):
-            token = None
-        return response, token
-
-    if manager is None:
-        await connect()
-    else:
-        await manager.run_with_token_replacement(connect)
+    await AsyncSandboxApi._cls_connect(
+        sandbox_id=self.sandbox_id,
+        timeout=timeout,
+        **self.connection_config.get_api_params(**opts),
+    )
+    if (
+        not self.traffic_access_token
+        and getattr(self, _ASYNC_MANAGER_ATTRIBUTE, None) is None
+    ):
+        _install_lazy_token_manager_if_required(self, await self.get_info())
     return self
-
-
-def _patch_async_kill() -> None:
-    descriptor = E2BAsyncSandbox.__dict__["kill"]
-    original = descriptor.method
-
-    async def kill(self, *args, **kwargs):
-        try:
-            return await original(self, *args, **kwargs)
-        finally:
-            manager = getattr(self, _ASYNC_MANAGER_ATTRIBUTE, None)
-            if manager is not None:
-                await manager.stop()
-
-    descriptor.method = kill
 
 
 def patch_traffic_access_token() -> None:
@@ -388,7 +402,8 @@ def patch_traffic_access_token() -> None:
     SandboxBase.traffic_access_token = property(_traffic_access_token)
     E2BSandbox.refresh_traffic_access_token = _refresh_sync
     E2BAsyncSandbox.refresh_traffic_access_token = _refresh_async
-    E2BAsyncSandbox.close_traffic_token_refresh = _close_async_refresh
+    E2BSandbox._cls_connect_sandbox = classmethod(_connect_sandbox_sync)
+    E2BAsyncSandbox._cls_connect_sandbox = classmethod(_connect_sandbox_async)
     _original_sync_connect.method = _connect_sync
     _original_async_connect.method = _connect_async
     envd_client_sync.build_interceptors = _build_sync_interceptors
@@ -398,5 +413,4 @@ def patch_traffic_access_token() -> None:
     E2BAsyncSandbox.__init__ = _async_sandbox_init
     SandboxSync._client = property(_sync_jupyter_client)
     SandboxAsync._client = property(_async_jupyter_client)
-    _patch_async_kill()
     _PATCHED = True

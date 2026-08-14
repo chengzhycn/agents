@@ -93,10 +93,10 @@ func TestRefreshTrafficAccessToken(t *testing.T) {
 	assert.Equal(t, "refreshed-jwt", response.Body.TrafficAccessToken)
 	assert.NotEmpty(t, response.Body.TrafficAccessTokenExpiration)
 
-	_, apiErr = controller.RefreshTrafficAccessToken(request)
-	require.NotNil(t, apiErr)
-	assert.Equal(t, http.StatusTooManyRequests, apiErr.Code)
-	assert.NotEmpty(t, apiErr.Headers["Retry-After"])
+	cached, apiErr := controller.RefreshTrafficAccessToken(request)
+	require.Nil(t, apiErr)
+	require.NotNil(t, cached.Body)
+	assert.Equal(t, response.Body, cached.Body)
 }
 
 func TestTrafficAccessTokenRouteIsKruiseOnly(t *testing.T) {
@@ -109,14 +109,13 @@ func TestTrafficAccessTokenRouteIsKruiseOnly(t *testing.T) {
 	assert.Equal(t, "POST /kruise/api/sandboxes/{sandboxID}/traffic-access-token", kruisePattern)
 }
 
-func TestConnectSandboxTrafficAccessTokenBootstrap(t *testing.T) {
+func TestConnectSandboxDoesNotIssueTrafficAccessToken(t *testing.T) {
 	tests := []struct {
-		name        string
-		enableJWT   bool
-		expectToken bool
+		name      string
+		enableJWT bool
 	}{
-		{name: "JWT protected sandbox receives bootstrap token", enableJWT: true, expectToken: true},
-		{name: "unprotected sandbox keeps existing response", enableJWT: false},
+		{name: "JWT protected sandbox", enableJWT: true},
+		{name: "unprotected sandbox"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,7 +130,7 @@ func TestConnectSandboxTrafficAccessTokenBootstrap(t *testing.T) {
 			}
 			sandbox := &v1alpha1.Sandbox{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "connect-bootstrap", Namespace: "sandbox-system", UID: "connect-bootstrap-uid",
+					Name: "connect-no-token", Namespace: "sandbox-system", UID: "connect-no-token-uid",
 					Labels: map[string]string{v1alpha1.LabelSandboxIsClaimed: v1alpha1.True}, Annotations: annotations,
 				},
 				Status: v1alpha1.SandboxStatus{
@@ -149,15 +148,9 @@ func TestConnectSandboxTrafficAccessTokenBootstrap(t *testing.T) {
 			response, apiErr := controller.ConnectSandbox(NewRequest(t, nil, models.SetTimeoutRequest{TimeoutSeconds: 30}, map[string]string{"sandboxID": sandboxID}, user))
 			require.Nil(t, apiErr)
 			require.NotNil(t, response.Body)
-			if tt.expectToken {
-				assert.Equal(t, "refreshed-jwt", response.Body.TrafficAccessToken)
-				assert.NotEmpty(t, response.Body.TrafficAccessTokenExpiration)
-				assert.Equal(t, int32(1), provider.calls.Load())
-			} else {
-				assert.Empty(t, response.Body.TrafficAccessToken)
-				assert.Empty(t, response.Body.TrafficAccessTokenExpiration)
-				assert.Zero(t, provider.calls.Load())
-			}
+			assert.Empty(t, response.Body.TrafficAccessToken)
+			assert.Empty(t, response.Body.TrafficAccessTokenExpiration)
+			assert.Zero(t, provider.calls.Load())
 		})
 	}
 }

@@ -347,7 +347,8 @@ def test_gateway_traffic_access_token_rotation(sandbox_context, config):
 
     deadline = time.monotonic() + max(20, validity / 2)
     while time.monotonic() < deadline:
-        assert sandbox.is_running()
+        probe = sandbox.commands.run("true")
+        assert probe.exit_code == 0
         if sandbox.traffic_access_token != initial_token:
             break
         time.sleep(0.5)

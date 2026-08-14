@@ -38,25 +38,15 @@ type RefreshTrafficAccessTokenOptions struct {
 
 // RefreshTrafficAccessToken issues a new token without mutating the Sandbox.
 func (m *SandboxManager) RefreshTrafficAccessToken(ctx context.Context, opts RefreshTrafficAccessTokenOptions) (infra.TrafficAccessToken, error) {
-	result, _, err := m.issueTrafficAccessToken(ctx, opts, false, true)
-	return result, err
+	return m.issueTrafficAccessToken(ctx, opts)
 }
 
-// BootstrapTrafficAccessToken issues a token for connect responses when the
-// Sandbox requires traffic authentication. The issued result is false for an
-// unprotected Sandbox. Bootstrap bypasses the completed-refresh interval so a
-// recent explicit refresh cannot make Connect fail, but still joins an issuance
-// already in flight for the Sandbox.
-func (m *SandboxManager) BootstrapTrafficAccessToken(ctx context.Context, opts RefreshTrafficAccessTokenOptions) (token infra.TrafficAccessToken, issued bool, err error) {
-	return m.issueTrafficAccessToken(ctx, opts, true, false)
-}
-
-func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts RefreshTrafficAccessTokenOptions, allowUnprotected, enforceInterval bool) (infra.TrafficAccessToken, bool, error) {
+func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts RefreshTrafficAccessTokenOptions) (infra.TrafficAccessToken, error) {
 	if opts.User == "" {
-		return infra.TrafficAccessToken{}, false, managererrors.NewError(managererrors.ErrorBadRequest, "user is required")
+		return infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorBadRequest, "user is required")
 	}
 	if opts.SandboxID == "" {
-		return infra.TrafficAccessToken{}, false, managererrors.NewError(managererrors.ErrorBadRequest, "sandbox ID is required")
+		return infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorBadRequest, "sandbox ID is required")
 	}
 
 	sandbox, err := m.GetSandbox(ctx, opts.User, nil, infra.GetSandboxOptions{
@@ -64,29 +54,26 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 		SandboxID: opts.SandboxID,
 	})
 	if err != nil {
-		return infra.TrafficAccessToken{}, false, err
-	}
-	route, err := sandbox.GetRoute()
-	if err != nil {
-		return infra.TrafficAccessToken{}, false, managererrors.NewError(managererrors.ErrorUnavailable, "failed to resolve sandbox route: %v", err)
-	}
-	if allowUnprotected && !route.RequireTrafficAuth {
-		return infra.TrafficAccessToken{}, false, nil
+		return infra.TrafficAccessToken{}, err
 	}
 	if err := validateTrafficTokenSandbox(sandbox, opts.User); err != nil {
-		return infra.TrafficAccessToken{}, false, err
+		return infra.TrafficAccessToken{}, err
 	}
 	if m.trafficTokenLimiter == nil {
-		return infra.TrafficAccessToken{}, false, managererrors.NewError(managererrors.ErrorInternal, "traffic access token limiter is not configured")
+		return infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorInternal, "traffic access token limiter is not configured")
 	}
 
 	limiterKey := string(sandbox.GetUID())
-	if limiterKey == "" {
+	if limiterKey != "" {
+		// A reusable Sandbox CR can serve multiple deliveries. Include the
+		// delivery ID so a recycled CR cannot receive its previous token.
+		limiterKey += "\x00" + opts.SandboxID
+	} else {
 		limiterKey = opts.SandboxID
 	}
-	flight, leader, ok := m.trafficTokenLimiter.acquire(limiterKey, enforceInterval)
-	if !ok {
-		return infra.TrafficAccessToken{}, false, managererrors.NewError(managererrors.ErrorRateLimited, "traffic access token refresh is rate limited")
+	flight, cached, leader := m.trafficTokenLimiter.acquire(limiterKey)
+	if flight == nil {
+		return cached, nil
 	}
 	if !leader {
 		// Only the leader owns flight completion. A follower may stop waiting or
@@ -94,12 +81,12 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 		// flight; the leader does that after issuance returns.
 		select {
 		case <-ctx.Done():
-			return infra.TrafficAccessToken{}, false, managererrors.NewError(managererrors.ErrorUnavailable, "waiting for traffic access token issuance: %v", ctx.Err())
+			return infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorUnavailable, "waiting for traffic access token issuance: %v", ctx.Err())
 		case <-flight.done:
 			if flight.err != nil {
-				return infra.TrafficAccessToken{}, false, flight.err
+				return infra.TrafficAccessToken{}, flight.err
 			}
-			return flight.result, true, nil
+			return flight.result, nil
 		}
 	}
 
@@ -120,9 +107,9 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 	}
 	m.trafficTokenLimiter.complete(limiterKey, flight, result, issueErr)
 	if issueErr != nil {
-		return infra.TrafficAccessToken{}, false, issueErr
+		return infra.TrafficAccessToken{}, issueErr
 	}
-	return result, true, nil
+	return result, nil
 }
 
 func validateTrafficTokenSandbox(sandbox infra.Sandbox, user string) error {
@@ -146,6 +133,7 @@ func validateTrafficTokenSandbox(sandbox infra.Sandbox, user string) error {
 type trafficTokenLimitEntry struct {
 	flight      *trafficTokenFlight
 	lastSuccess time.Time
+	result      infra.TrafficAccessToken
 }
 
 type trafficTokenFlight struct {
@@ -166,22 +154,23 @@ func newTrafficTokenLimiter(minInterval time.Duration, now func() time.Time) *tr
 	return &trafficTokenLimiter{entries: make(map[string]trafficTokenLimitEntry), minInterval: minInterval, now: now}
 }
 
-func (l *trafficTokenLimiter) acquire(key string, enforceInterval bool) (flight *trafficTokenFlight, leader, ok bool) {
+func (l *trafficTokenLimiter) acquire(key string) (flight *trafficTokenFlight, cached infra.TrafficAccessToken, leader bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
 	l.cleanup(now)
 	entry := l.entries[key]
 	if entry.flight != nil {
-		return entry.flight, false, true
+		return entry.flight, infra.TrafficAccessToken{}, false
 	}
-	if elapsed := now.Sub(entry.lastSuccess); enforceInterval && !entry.lastSuccess.IsZero() && elapsed < l.minInterval {
-		return nil, false, false
+	if elapsed := now.Sub(entry.lastSuccess); !entry.lastSuccess.IsZero() &&
+		elapsed < l.minInterval && entry.result.Expiration.After(now.Add(l.minInterval)) {
+		return nil, entry.result, false
 	}
 	flight = &trafficTokenFlight{done: make(chan struct{})}
 	entry.flight = flight
 	l.entries[key] = entry
-	return flight, true, true
+	return flight, infra.TrafficAccessToken{}, true
 }
 
 func (l *trafficTokenLimiter) complete(key string, flight *trafficTokenFlight, result infra.TrafficAccessToken, err error) {
@@ -193,10 +182,10 @@ func (l *trafficTokenLimiter) complete(key string, flight *trafficTokenFlight, r
 	if entry.flight == flight {
 		entry.flight = nil
 		if err == nil {
-			// Only successful issuance advances the interval. A failed attempt
-			// preserves any prior success so bootstrap failures cannot erase its
-			// budget, while an initial failure remains immediately retryable.
+			// Reuse a recent successful result so another tokenless client can
+			// connect without triggering duplicate issuance or receiving 429.
 			entry.lastSuccess = l.now()
+			entry.result = result
 		}
 		l.entries[key] = entry
 	}

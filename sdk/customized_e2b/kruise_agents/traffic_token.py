@@ -7,7 +7,6 @@ import json
 import random
 import threading
 import time
-import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -89,31 +88,34 @@ class _TrafficTokenState:
 
     def __init__(
         self,
-        token: str,
+        token: str | None,
         refresh: Callable[[], TrafficAccessToken],
         *,
         now: Callable[[], float] = time.time,
         random_value: Callable[[], float] = random.random,
     ):
-        expires_at, issued_at = expiration_from_jwt(token)
         self._token = token
-        self._expires_at = expires_at.timestamp()
         self._refresh = refresh
         self._now = now
         self._random_value = random_value
-        self._refresh_at = self._calculate_refresh_at(
-            self._expires_at,
-            issued_at.timestamp() if issued_at is not None else now(),
-        )
+        if token is None:
+            self._expires_at = 0.0
+            self._refresh_at = 0.0
+        else:
+            expires_at, issued_at = expiration_from_jwt(token)
+            self._expires_at = expires_at.timestamp()
+            self._refresh_at = self._calculate_refresh_at(
+                self._expires_at,
+                issued_at.timestamp() if issued_at is not None else now(),
+            )
         self._next_retry_at = 0.0
         self._backoff_seconds = self._INITIAL_BACKOFF_SECONDS
         self._generation = 0
         self._refresh_attempt = 0
         self._refreshing = False
-        self._terminal = False
 
     @property
-    def token(self) -> str:
+    def token(self) -> str | None:
         return self._token
 
     @property
@@ -131,7 +133,7 @@ class _TrafficTokenState:
         return expires_at - refresh_ahead - jitter
 
     def _needs_refresh(self, force: bool) -> bool:
-        return force or self._now() >= self._refresh_at
+        return force or self._token is None or self._now() >= self._refresh_at
 
     def _in_backoff(self, force: bool) -> bool:
         return not force and self._now() < self._next_retry_at
@@ -142,16 +144,11 @@ class _TrafficTokenState:
         )
 
     def _use_current_or_raise(self) -> str:
-        if self._now() >= self._expires_at:
+        if self._token is None or self._now() >= self._expires_at:
             raise self._expired_error()
         return self._token
 
     def _record_failure(self, exc: Exception) -> None:
-        if isinstance(exc, TrafficAccessTokenRefreshError) and exc.status_code in (
-            404,
-            409,
-        ):
-            self._terminal = True
         retry_after = (
             exc.retry_after if isinstance(exc, TrafficAccessTokenRefreshError) else None
         )
@@ -173,7 +170,6 @@ class _TrafficTokenState:
         self._next_retry_at = 0.0
         self._backoff_seconds = self._INITIAL_BACKOFF_SECONDS
         self._generation += 1
-        self._terminal = False
         return self._token
 
     def _record_success(self, result: TrafficAccessToken) -> str:
@@ -195,22 +191,6 @@ class _TrafficTokenState:
                 "traffic access token expiration does not match its exp claim"
             )
         return self._set_token(result.token, expires_at, self._now())
-
-    def _record_replacement(self, token: str) -> str:
-        expires_at, issued_at = expiration_from_jwt(token)
-        return self._set_token(
-            token,
-            expires_at.timestamp(),
-            issued_at.timestamp() if issued_at is not None else self._now(),
-        )
-
-    def next_wakeup_delay(self) -> float:
-        target = max(self._refresh_at, self._next_retry_at)
-        return max(0.0, target - self._now())
-
-    @property
-    def terminal(self) -> bool:
-        return self._terminal
 
 
 class TrafficTokenManager(_TrafficTokenState):
@@ -250,29 +230,16 @@ class TrafficTokenManager(_TrafficTokenState):
             finally:
                 self._refreshing = False
 
-    def replace_token(self, token: str) -> str:
-        with self._lock:
-            return self._record_replacement(token)
-
-    def run_with_token_replacement(self, operation):
-        with self._lock:
-            result, token = operation()
-            if token is not None:
-                self._record_replacement(token)
-            return result
-
 
 class AsyncTrafficTokenManager(_TrafficTokenState):
     def __init__(
         self,
-        token: str,
+        token: str | None,
         refresh: Callable[[], Awaitable[TrafficAccessToken]],
         **kwargs,
     ):
         super().__init__(token, refresh, **kwargs)
         self._lock = asyncio.Lock()
-        self._refresh_task: asyncio.Task | None = None
-        self._refresh_finalizer = None
 
     async def ensure_valid_token(self, force: bool = False) -> str:
         generation = self._generation
@@ -298,11 +265,7 @@ class AsyncTrafficTokenManager(_TrafficTokenState):
             self._refreshing = True
             try:
                 result = await self._refresh()
-                was_terminal = self._terminal
-                token = self._record_success(result)
-                if was_terminal:
-                    self.start()
-                return token
+                return self._record_success(result)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -312,66 +275,3 @@ class AsyncTrafficTokenManager(_TrafficTokenState):
                 return self._token
             finally:
                 self._refreshing = False
-
-    async def replace_token(self, token: str) -> str:
-        async with self._lock:
-            was_terminal = self._terminal
-            result = self._record_replacement(token)
-        if was_terminal:
-            self.start()
-        return result
-
-    async def run_with_token_replacement(self, operation):
-        async with self._lock:
-            result, token = await operation()
-            was_terminal = self._terminal
-            if token is not None:
-                self._record_replacement(token)
-        if token is not None and was_terminal:
-            self.start()
-        return result
-
-    def start(self) -> None:
-        if self._refresh_task is not None and not self._refresh_task.done():
-            return
-        if self._refresh_finalizer is not None:
-            self._refresh_finalizer.detach()
-        manager_ref = weakref.ref(self)
-        task = asyncio.create_task(self._refresh_loop(manager_ref))
-        self._refresh_task = task
-        self._refresh_finalizer = weakref.finalize(self, task.cancel)
-
-    async def stop(self) -> None:
-        task = self._refresh_task
-        self._refresh_task = None
-        finalizer = self._refresh_finalizer
-        self._refresh_finalizer = None
-        if finalizer is not None:
-            finalizer.detach()
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    @staticmethod
-    async def _refresh_loop(manager_ref) -> None:
-        while True:
-            manager = manager_ref()
-            if manager is None:
-                return
-            delay = manager.next_wakeup_delay()
-            del manager
-            await asyncio.sleep(delay)
-            manager = manager_ref()
-            if manager is None:
-                return
-            try:
-                await manager.ensure_valid_token()
-            except TrafficAccessTokenExpired:
-                pass
-            if manager.terminal:
-                return
-            del manager

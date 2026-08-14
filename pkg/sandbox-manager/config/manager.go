@@ -36,8 +36,8 @@ const (
 	// DefaultTrafficAccessTokenMaxValidity is the default upper bound for the
 	// configured traffic access token validity.
 	DefaultTrafficAccessTokenMaxValidity = DefaultTrafficAccessTokenValidity
-	// DefaultTrafficAccessTokenRefreshMinInterval limits repeated issuance for
-	// one Sandbox while still allowing proactive client refresh.
+	// DefaultTrafficAccessTokenRefreshMinInterval reuses a recent successful
+	// issuance for one Sandbox to avoid signing duplicate tokens.
 	DefaultTrafficAccessTokenRefreshMinInterval = 30 * time.Second
 )
 

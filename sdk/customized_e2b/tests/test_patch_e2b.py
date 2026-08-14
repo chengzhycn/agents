@@ -91,19 +91,95 @@ def test_sync_patch_refreshes_http_rpc_and_jupyter_headers(monkeypatch):
     assert jupyter_client.event_hooks["request"]
     jupyter_client.close()
 
-    bootstrap_token = jwt(now + 7200, now)
     monkeypatch.setattr(
         patch_module.SyncSandboxApi,
         "_cls_connect",
-        classmethod(
-            lambda _cls, **_kwargs: SimpleNamespace(
-                traffic_access_token=bootstrap_token
-            )
-        ),
+        classmethod(lambda _cls, **_kwargs: SimpleNamespace()),
     )
     sandbox.connection_config.debug = False
     assert sandbox.connect() is sandbox
-    assert sandbox.traffic_access_token == bootstrap_token
+    assert sandbox.traffic_access_token == refreshed_token
+
+
+def test_sync_class_connect_lazily_bootstraps_protected_sandbox(monkeypatch):
+    monkeypatch.setenv("E2B_DOMAIN", "example.test")
+    patch_e2b(validate_key=False)
+    patch_module.patch_traffic_access_token()
+    now = time.time()
+    refreshed_token = jwt(now + 7200, now)
+    sandbox = Sandbox(
+        sandbox_id="sandbox-1",
+        sandbox_domain="example.test",
+        envd_version=Version("0.2.0"),
+        envd_access_token=None,
+        traffic_access_token=None,
+        connection_config=config(),
+    )
+    sandbox.connection_config.debug = False
+    envd_client = sandbox.files._envd_api
+    assert envd_client.event_hooks["request"]
+    monkeypatch.setattr(
+        patch_module,
+        "_original_sync_cls_connect_sandbox",
+        lambda _cls, *_args, **_kwargs: sandbox,
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "get_info",
+        lambda: SimpleNamespace(metadata={patch_module._JWT_AUTH_METADATA_KEY: "true"}),
+    )
+    monkeypatch.setattr(
+        patch_module,
+        "_sync_refresh",
+        lambda _config, _sandbox_id: token_result(refreshed_token, now + 7200),
+    )
+
+    connected = patch_module._connect_sandbox_sync(Sandbox, "sandbox-1")
+    manager = getattr(connected, patch_module._SYNC_MANAGER_ATTRIBUTE)
+    assert manager.token is None
+
+    request = httpx.Request("POST", "https://example.test")
+    envd_client.event_hooks["request"][0](request)
+    assert request.headers[patch_module._TRAFFIC_TOKEN_HEADER] == refreshed_token
+    envd_client.close()
+
+
+def test_sync_class_connect_skips_lazy_manager_for_unprotected_sandbox(monkeypatch):
+    sandbox = Sandbox(
+        sandbox_id="sandbox-1",
+        sandbox_domain="example.test",
+        envd_version=Version("0.2.0"),
+        envd_access_token=None,
+        traffic_access_token=None,
+        connection_config=config(),
+    )
+    sandbox.connection_config.debug = False
+    monkeypatch.setattr(
+        patch_module,
+        "_original_sync_cls_connect_sandbox",
+        lambda _cls, *_args, **_kwargs: sandbox,
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "get_info",
+        lambda: SimpleNamespace(metadata={}),
+    )
+
+    connected = patch_module._connect_sandbox_sync(Sandbox, "sandbox-1")
+
+    assert not hasattr(connected, patch_module._SYNC_MANAGER_ATTRIBUTE)
+
+    class Context:
+        def __init__(self):
+            self.request_headers = {}
+
+    context = Context()
+    interceptor = patch_module._TrafficTokenInterceptor(connected.connection_config)
+    assert (
+        interceptor.intercept_unary_sync(lambda request, _ctx: request, "ok", context)
+        == "ok"
+    )
+    assert patch_module._TRAFFIC_TOKEN_HEADER not in context.request_headers
 
 
 def test_opaque_traffic_token_keeps_legacy_behavior(monkeypatch):
@@ -124,7 +200,7 @@ def test_opaque_traffic_token_keeps_legacy_behavior(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_async_patch_refreshes_and_stops_with_sandbox(monkeypatch):
+async def test_async_patch_refreshes_on_data_plane_requests(monkeypatch):
     monkeypatch.setenv("E2B_DOMAIN", "example.test")
     patch_e2b(https=False, validate_key=False)
     patch_module.patch_traffic_access_token()
@@ -143,8 +219,6 @@ async def test_async_patch_refreshes_and_stops_with_sandbox(monkeypatch):
         traffic_access_token=jwt(now + 3600, now),
         connection_config=config(),
     )
-    manager = getattr(sandbox, patch_module._ASYNC_MANAGER_ATTRIBUTE)
-
     assert await sandbox.refresh_traffic_access_token(force=True) == refreshed_token
     assert sandbox._envd_api.event_hooks["request"]
     request = httpx.Request("POST", "https://example.test")
@@ -156,24 +230,58 @@ async def test_async_patch_refreshes_and_stops_with_sandbox(monkeypatch):
     assert sandbox._jupyter_url.startswith("http://")
     await jupyter_client.aclose()
 
-    bootstrap_token = jwt(now + 7200, now)
-
     async def connect(_cls, **_kwargs):
-        return SimpleNamespace(traffic_access_token=bootstrap_token)
+        return SimpleNamespace()
 
     monkeypatch.setattr(
         patch_module.AsyncSandboxApi, "_cls_connect", classmethod(connect)
     )
     sandbox.connection_config.debug = False
     assert await sandbox.connect() is sandbox
-    assert sandbox.traffic_access_token == bootstrap_token
+    assert sandbox.traffic_access_token == refreshed_token
     sandbox.connection_config.debug = True
     await sandbox.kill()
     await sandbox._envd_api.aclose()
 
-    assert manager._refresh_task is None
 
-    await sandbox.close_traffic_token_refresh()
+@pytest.mark.asyncio
+async def test_async_class_connect_lazily_bootstraps_protected_sandbox(monkeypatch):
+    monkeypatch.setenv("E2B_DOMAIN", "example.test")
+    patch_e2b(https=False, validate_key=False)
+    patch_module.patch_traffic_access_token()
+    now = time.time()
+    refreshed_token = jwt(now + 7200, now)
+    sandbox = AsyncSandbox(
+        sandbox_id="sandbox-1",
+        sandbox_domain="example.test",
+        envd_version=Version("0.2.0"),
+        envd_access_token=None,
+        traffic_access_token=None,
+        connection_config=config(),
+    )
+    sandbox.connection_config.debug = False
+
+    async def connect(_cls, *_args, **_kwargs):
+        return sandbox
+
+    async def get_info():
+        return SimpleNamespace(metadata={patch_module._JWT_AUTH_METADATA_KEY: "true"})
+
+    async def refresh(_config, _sandbox_id):
+        return token_result(refreshed_token, now + 7200)
+
+    monkeypatch.setattr(patch_module, "_original_async_cls_connect_sandbox", connect)
+    monkeypatch.setattr(sandbox, "get_info", get_info)
+    monkeypatch.setattr(patch_module, "_async_refresh", refresh)
+
+    connected = await patch_module._connect_sandbox_async(AsyncSandbox, "sandbox-1")
+    manager = getattr(connected, patch_module._ASYNC_MANAGER_ATTRIBUTE)
+    assert manager.token is None
+
+    request = httpx.Request("POST", "https://example.test")
+    await connected._envd_api.event_hooks["request"][0](request)
+    assert request.headers[patch_module._TRAFFIC_TOKEN_HEADER] == refreshed_token
+    await connected._envd_api.aclose()
 
 
 def test_refresh_response_rejects_errors_without_exposing_body():
