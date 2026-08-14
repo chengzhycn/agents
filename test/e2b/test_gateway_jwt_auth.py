@@ -318,6 +318,12 @@ def test_gateway_traffic_access_token_jwt_with_e2b_sdk(sandbox_context, config):
         websocket.close()
 
 
+@pytest.mark.skip(
+    reason=(
+        "requires a production-configurable signed JWT issuer in the "
+        "open-source sandbox-manager"
+    )
+)
 def test_gateway_traffic_access_token_rotation(sandbox_context, config):
     """Verify automatic refresh keeps SDK traffic working across rotation."""
     validity = int(os.environ.get("JWT_E2E_TOKEN_VALIDITY_SECONDS", "65"))
