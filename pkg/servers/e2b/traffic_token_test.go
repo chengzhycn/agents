@@ -99,6 +99,16 @@ func TestRefreshTrafficAccessToken(t *testing.T) {
 	assert.NotEmpty(t, apiErr.Headers["Retry-After"])
 }
 
+func TestTrafficAccessTokenRouteIsKruiseOnly(t *testing.T) {
+	controller, _, teardown := Setup(t)
+	defer teardown()
+
+	_, nativePattern := controller.mux.Handler(httptest.NewRequest(http.MethodPost, "/sandboxes/sandbox-id/traffic-access-token", nil))
+	assert.NotEqual(t, "POST /sandboxes/{sandboxID}/traffic-access-token", nativePattern)
+	_, kruisePattern := controller.mux.Handler(httptest.NewRequest(http.MethodPost, "/kruise/api/sandboxes/sandbox-id/traffic-access-token", nil))
+	assert.Equal(t, "POST /kruise/api/sandboxes/{sandboxID}/traffic-access-token", kruisePattern)
+}
+
 func TestConnectSandboxTrafficAccessTokenBootstrap(t *testing.T) {
 	tests := []struct {
 		name        string

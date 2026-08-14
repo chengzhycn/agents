@@ -43,8 +43,11 @@ func (m *SandboxManager) RefreshTrafficAccessToken(ctx context.Context, opts Ref
 }
 
 // BootstrapTrafficAccessToken issues a token for connect responses when the
-// Sandbox requires traffic authentication. Unprotected Sandboxes are skipped.
-func (m *SandboxManager) BootstrapTrafficAccessToken(ctx context.Context, opts RefreshTrafficAccessTokenOptions) (infra.TrafficAccessToken, bool, error) {
+// Sandbox requires traffic authentication. The issued result is false for an
+// unprotected Sandbox. Bootstrap bypasses the completed-refresh interval so a
+// recent explicit refresh cannot make Connect fail, but still joins an issuance
+// already in flight for the Sandbox.
+func (m *SandboxManager) BootstrapTrafficAccessToken(ctx context.Context, opts RefreshTrafficAccessTokenOptions) (token infra.TrafficAccessToken, issued bool, err error) {
 	return m.issueTrafficAccessToken(ctx, opts, true, false)
 }
 
