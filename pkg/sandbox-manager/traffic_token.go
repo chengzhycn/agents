@@ -89,6 +89,9 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 		return infra.TrafficAccessToken{}, false, managererrors.NewError(managererrors.ErrorRateLimited, "traffic access token refresh is rate limited")
 	}
 	if !leader {
+		// Only the leader owns flight completion. A follower may stop waiting or
+		// consume the published result, but must not clear or close the shared
+		// flight; the leader does that after issuance returns.
 		select {
 		case <-ctx.Done():
 			return infra.TrafficAccessToken{}, false, managererrors.NewError(managererrors.ErrorUnavailable, "waiting for traffic access token issuance: %v", ctx.Err())
