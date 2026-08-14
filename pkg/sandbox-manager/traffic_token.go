@@ -193,6 +193,11 @@ func (l *trafficTokenLimiter) complete(key string, flight *trafficTokenFlight, r
 	entry := l.entries[key]
 	if entry.flight == flight {
 		entry.flight = nil
+		if err != nil {
+			// Failed issuance does not spend the caller's refresh budget. The
+			// client owns retry backoff and may retry while its old token is valid.
+			entry.last = time.Time{}
+		}
 		l.entries[key] = entry
 	}
 	close(flight.done)

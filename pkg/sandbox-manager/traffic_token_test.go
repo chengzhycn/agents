@@ -113,6 +113,7 @@ func TestSandboxManagerRefreshTrafficAccessToken(t *testing.T) {
 		mutate        func(*v1alpha1.Sandbox)
 		user          string
 		providerError error
+		retryOnError  bool
 		expectCode    managererrors.ErrorCode
 		expectCalls   int32
 	}{
@@ -121,7 +122,7 @@ func TestSandboxManagerRefreshTrafficAccessToken(t *testing.T) {
 		{name: "owner mismatch", user: "other", expectCode: managererrors.ErrorNotAllowed},
 		{name: "JWT disabled", mutate: func(s *v1alpha1.Sandbox) { delete(s.Annotations, identity.AnnotationEnableJwtAuth) }, expectCode: managererrors.ErrorConflict},
 		{name: "unsupported state", mutate: func(s *v1alpha1.Sandbox) { s.Status.Phase = v1alpha1.SandboxFailed }, expectCode: managererrors.ErrorConflict},
-		{name: "provider unavailable", providerError: providerErr, expectCode: managererrors.ErrorUnavailable, expectCalls: 1},
+		{name: "provider unavailable", providerError: providerErr, retryOnError: true, expectCode: managererrors.ErrorUnavailable, expectCalls: 2},
 	}
 
 	for _, tt := range tests {
@@ -150,10 +151,11 @@ func TestSandboxManagerRefreshTrafficAccessToken(t *testing.T) {
 			if user == "" {
 				user = testUser
 			}
-			result, err := manager.RefreshTrafficAccessToken(t.Context(), RefreshTrafficAccessTokenOptions{
+			opts := RefreshTrafficAccessTokenOptions{
 				SandboxID: sandboxID,
 				User:      user,
-			})
+			}
+			result, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
 			if tt.expectCode != "" {
 				require.Error(t, err)
 				assert.Equal(t, tt.expectCode, managererrors.GetErrCode(err))
@@ -162,6 +164,12 @@ func TestSandboxManagerRefreshTrafficAccessToken(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, "refreshed-token", result.Token)
 				assert.WithinDuration(t, time.Now().Add(time.Hour), result.Expiration, 2*time.Second)
+			}
+			if tt.retryOnError {
+				provider.err = nil
+				result, err = manager.RefreshTrafficAccessToken(t.Context(), opts)
+				require.NoError(t, err)
+				assert.Equal(t, "refreshed-token", result.Token)
 			}
 			assert.Equal(t, tt.expectCalls, provider.calls.Load())
 		})
@@ -339,4 +347,13 @@ func TestTrafficTokenLimiter(t *testing.T) {
 	require.True(t, ok, "bootstrap issuance bypasses the completed-attempt interval")
 	assert.True(t, leader)
 	limiter.complete("sandbox-a", flight, infra.TrafficAccessToken{Token: "token"}, nil)
+
+	failed, leader, ok := limiter.acquire("sandbox-failed", true)
+	require.True(t, ok)
+	assert.True(t, leader)
+	limiter.complete("sandbox-failed", failed, infra.TrafficAccessToken{}, errors.New("issuer unavailable"))
+	failed, leader, ok = limiter.acquire("sandbox-failed", true)
+	require.True(t, ok, "failed issuance must not consume the refresh interval")
+	assert.True(t, leader)
+	limiter.complete("sandbox-failed", failed, infra.TrafficAccessToken{Token: "retry-token"}, nil)
 }
