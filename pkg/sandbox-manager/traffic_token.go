@@ -144,8 +144,8 @@ func validateTrafficTokenSandbox(sandbox infra.Sandbox, user string) error {
 }
 
 type trafficTokenLimitEntry struct {
-	flight *trafficTokenFlight
-	last   time.Time
+	flight      *trafficTokenFlight
+	lastSuccess time.Time
 }
 
 type trafficTokenFlight struct {
@@ -175,12 +175,11 @@ func (l *trafficTokenLimiter) acquire(key string, enforceInterval bool) (flight 
 	if entry.flight != nil {
 		return entry.flight, false, true
 	}
-	if elapsed := now.Sub(entry.last); enforceInterval && !entry.last.IsZero() && elapsed < l.minInterval {
+	if elapsed := now.Sub(entry.lastSuccess); enforceInterval && !entry.lastSuccess.IsZero() && elapsed < l.minInterval {
 		return nil, false, false
 	}
 	flight = &trafficTokenFlight{done: make(chan struct{})}
 	entry.flight = flight
-	entry.last = now
 	l.entries[key] = entry
 	return flight, true, true
 }
@@ -193,10 +192,11 @@ func (l *trafficTokenLimiter) complete(key string, flight *trafficTokenFlight, r
 	entry := l.entries[key]
 	if entry.flight == flight {
 		entry.flight = nil
-		if err != nil {
-			// Failed issuance does not spend the caller's refresh budget. The
-			// client owns retry backoff and may retry while its old token is valid.
-			entry.last = time.Time{}
+		if err == nil {
+			// Only successful issuance advances the interval. A failed attempt
+			// preserves any prior success so bootstrap failures cannot erase its
+			// budget, while an initial failure remains immediately retryable.
+			entry.lastSuccess = l.now()
 		}
 		l.entries[key] = entry
 	}
@@ -208,7 +208,7 @@ func (l *trafficTokenLimiter) cleanup(now time.Time) {
 		return
 	}
 	for key, entry := range l.entries {
-		if entry.flight == nil && now.Sub(entry.last) >= l.minInterval {
+		if entry.flight == nil && now.Sub(entry.lastSuccess) >= l.minInterval {
 			delete(l.entries, key)
 		}
 	}
