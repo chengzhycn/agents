@@ -140,5 +140,8 @@ func ValidateTrafficAccessTokenOptions(opts TrafficAccessTokenOptions) error {
 	if opts.RefreshMinInterval <= 0 {
 		return fmt.Errorf("traffic access token refresh minimum interval must be positive")
 	}
+	if opts.RefreshMinInterval >= opts.MinValidity {
+		return fmt.Errorf("traffic access token refresh minimum interval must be less than minimum validity")
+	}
 	return nil
 }

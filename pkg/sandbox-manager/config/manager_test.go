@@ -266,6 +266,8 @@ func TestValidateTrafficAccessTokenOptions(t *testing.T) {
 		{name: "validity below minimum", opts: TrafficAccessTokenOptions{Validity: time.Minute, MinValidity: 5 * time.Minute, MaxValidity: time.Hour, RefreshMinInterval: time.Minute}, expectError: "must be between"},
 		{name: "validity above maximum", opts: TrafficAccessTokenOptions{Validity: 2 * time.Hour, MinValidity: 5 * time.Minute, MaxValidity: time.Hour, RefreshMinInterval: time.Minute}, expectError: "must be between"},
 		{name: "non-positive refresh interval", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 5 * time.Minute, MaxValidity: 24 * time.Hour}, expectError: "refresh minimum interval"},
+		{name: "refresh interval equal to minimum validity", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 5 * time.Minute, MaxValidity: 24 * time.Hour, RefreshMinInterval: 5 * time.Minute}, expectError: "less than minimum validity"},
+		{name: "refresh interval above minimum validity", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 5 * time.Minute, MaxValidity: 24 * time.Hour, RefreshMinInterval: 6 * time.Minute}, expectError: "less than minimum validity"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
