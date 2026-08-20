@@ -165,17 +165,13 @@ func TestTrafficTokenAPIError(t *testing.T) {
 		{name: "not found", err: managererrors.NewError(managererrors.ErrorNotFound, "missing"), wantStatus: http.StatusNotFound},
 		{name: "not allowed is concealed", err: managererrors.NewError(managererrors.ErrorNotAllowed, "owner"), wantStatus: http.StatusNotFound},
 		{name: "conflict", err: managererrors.NewError(managererrors.ErrorConflict, "state"), wantStatus: http.StatusConflict},
-		{name: "rate limited", err: managererrors.NewError(managererrors.ErrorRateLimited, "slow down"), wantStatus: http.StatusTooManyRequests},
 		{name: "unavailable", err: managererrors.NewError(managererrors.ErrorUnavailable, "issuer"), wantStatus: http.StatusServiceUnavailable},
 		{name: "unknown", err: context.Canceled, wantStatus: http.StatusInternalServerError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			apiErr := trafficTokenAPIError(tt.err, 1500*time.Millisecond)
+			apiErr := trafficTokenAPIError(tt.err)
 			assert.Equal(t, tt.wantStatus, apiErr.Code)
-			if tt.wantStatus == http.StatusTooManyRequests {
-				assert.Equal(t, "2", apiErr.Headers["Retry-After"])
-			}
 			encoded, err := json.Marshal(apiErr)
 			require.NoError(t, err)
 			assert.NotContains(t, string(encoded), tt.err.Error())

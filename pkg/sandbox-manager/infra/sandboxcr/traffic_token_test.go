@@ -37,15 +37,18 @@ func TestInfraIssueTrafficAccessToken(t *testing.T) {
 	expiration := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
 	rootErr := errors.New("provider unavailable")
 	tests := []struct {
-		name          string
-		providerError error
-		validateError error
-		expectError   string
-		expectCalls   int
+		name           string
+		providerError  error
+		validateError  error
+		missingSandbox bool
+		expectError    string
+		expectErrorIs  error
+		expectCalls    int
 	}{
 		{name: "success", expectCalls: 1},
 		{name: "provider failure is returned", providerError: rootErr, expectError: rootErr.Error(), expectCalls: 1},
 		{name: "policy rejection prevents issuance", validateError: errors.New("not authorized"), expectError: "not authorized"},
+		{name: "lookup miss is translated", missingSandbox: true, expectError: infra.ErrSandboxNotFound.Error(), expectErrorIs: infra.ErrSandboxNotFound},
 	}
 
 	for _, tt := range tests {
@@ -54,12 +57,14 @@ func TestInfraIssueTrafficAccessToken(t *testing.T) {
 			infraInstance.APIReader = nil
 			sandbox := makeClaimedSandbox("default", "traffic-token", "10.0.0.1")
 			sandbox.Annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.True
-			CreateSandboxWithStatus(t, cachedClient, sandbox)
 			sandboxID := sandboxid.Resolve(sandbox)
-			require.Eventually(t, func() bool {
-				_, err := infraInstance.Cache.GetClaimedSandbox(t.Context(), infracache.GetClaimedSandboxOptions{SandboxID: sandboxID})
-				return err == nil
-			}, time.Second, 10*time.Millisecond)
+			if !tt.missingSandbox {
+				CreateSandboxWithStatus(t, cachedClient, sandbox)
+				require.Eventually(t, func() bool {
+					_, err := infraInstance.Cache.GetClaimedSandbox(t.Context(), infracache.GetClaimedSandboxOptions{SandboxID: sandboxID})
+					return err == nil
+				}, time.Second, 10*time.Millisecond)
+			}
 
 			var gotOpts identity.TokenOptions
 			providerCalls := 0
@@ -88,13 +93,20 @@ func TestInfraIssueTrafficAccessToken(t *testing.T) {
 			if tt.expectError != "" {
 				require.Error(t, err)
 				assert.ErrorContains(t, err, tt.expectError)
+				if tt.expectErrorIs != nil {
+					assert.ErrorIs(t, err, tt.expectErrorIs)
+				}
 				assert.Empty(t, result)
 			} else {
 				require.NoError(t, err)
 				assert.Equal(t, "signed-token", result.Token)
 				assert.Equal(t, expiration, result.Expiration)
 			}
-			assert.Equal(t, 1, validateCalls)
+			if tt.missingSandbox {
+				assert.Zero(t, validateCalls)
+			} else {
+				assert.Equal(t, 1, validateCalls)
+			}
 			assert.Equal(t, tt.expectCalls, providerCalls)
 			if tt.expectCalls > 0 {
 				assert.Equal(t, identity.TokenKindAccessToken, gotOpts.Kind)

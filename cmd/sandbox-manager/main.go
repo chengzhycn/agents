@@ -223,7 +223,6 @@ func main() {
 		Validity: trafficTokenValidity, MinValidity: trafficTokenMinValidity, MaxValidity: trafficTokenMaxValidity,
 		RefreshMinInterval: trafficTokenRefreshMinInterval,
 	}
-	mustValidateTrafficAccessTokenOptions(trafficTokenOpts)
 
 	if maxClaimWorkers < 0 {
 		klog.Fatalf("--max-claim-workers must be non-negative")
@@ -374,10 +373,4 @@ func main() {
 	}
 	<-sandboxCtx.Done()
 	klog.Info("Sandbox controller stopped")
-}
-
-func mustValidateTrafficAccessTokenOptions(opts config.TrafficAccessTokenOptions) {
-	if err := config.ValidateTrafficAccessTokenOptions(opts); err != nil {
-		klog.Fatalf("invalid traffic access token flags: %v", err)
-	}
 }

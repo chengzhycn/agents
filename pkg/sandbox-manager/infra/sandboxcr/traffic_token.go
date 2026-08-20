@@ -37,7 +37,7 @@ func (i *Infra) IssueTrafficAccessToken(ctx context.Context, opts infra.IssueTra
 	}
 	lookup, err := i.lookupSandbox(ctx, infra.GetSandboxOptions{Namespace: opts.Namespace, SandboxID: opts.SandboxID})
 	if err != nil {
-		return infra.TrafficAccessToken{}, err
+		return infra.TrafficAccessToken{}, wrapGetSandboxError(err)
 	}
 	if err := opts.Validate(AsSandbox(lookup.sandbox, i.Cache)); err != nil {
 		return infra.TrafficAccessToken{}, err

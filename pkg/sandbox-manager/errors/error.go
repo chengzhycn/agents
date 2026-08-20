@@ -31,7 +31,6 @@ const (
 	ErrorUnknown       = ErrorCode("Unknown")
 	ErrorBadRequest    = ErrorCode("BadRequest")
 	ErrorQuotaExceeded = ErrorCode("QuotaExceeded")
-	ErrorRateLimited   = ErrorCode("RateLimited")
 	ErrorUnavailable   = ErrorCode("Unavailable")
 )
 

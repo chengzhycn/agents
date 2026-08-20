@@ -23,9 +23,9 @@ import (
 	"time"
 
 	"github.com/openkruise/agents/api/v1alpha1"
-	"github.com/openkruise/agents/pkg/cache"
 	managererrors "github.com/openkruise/agents/pkg/sandbox-manager/errors"
 	"github.com/openkruise/agents/pkg/sandbox-manager/infra"
+	"k8s.io/klog/v2"
 )
 
 // RefreshTrafficAccessTokenOptions identifies the caller and Sandbox for an
@@ -81,6 +81,7 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 		// flight; the leader does that after issuance returns.
 		select {
 		case <-ctx.Done():
+			klog.FromContext(ctx).Error(ctx.Err(), "failed waiting for traffic access token issuance", "sandboxID", opts.SandboxID)
 			return infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorUnavailable, "waiting for traffic access token issuance: %v", ctx.Err())
 		case <-flight.done:
 			if flight.err != nil {
@@ -99,7 +100,7 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 		},
 	})
 	if issueErr != nil && managererrors.GetErrCode(issueErr) == managererrors.ErrorUnknown {
-		if errors.Is(issueErr, cache.ErrSandboxNotFound) {
+		if errors.Is(issueErr, infra.ErrSandboxNotFound) {
 			issueErr = managererrors.NewError(managererrors.ErrorNotFound, "sandbox %s not found", opts.SandboxID)
 		} else {
 			issueErr = managererrors.NewError(managererrors.ErrorUnavailable, "failed to issue traffic access token: %v", issueErr)
@@ -183,7 +184,7 @@ func (l *trafficTokenLimiter) complete(key string, flight *trafficTokenFlight, r
 		entry.flight = nil
 		if err == nil {
 			// Reuse a recent successful result so another tokenless client can
-			// connect without triggering duplicate issuance or receiving 429.
+			// connect without triggering duplicate issuance.
 			entry.lastSuccess = l.now()
 			entry.result = result
 		}

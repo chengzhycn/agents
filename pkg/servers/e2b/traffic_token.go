@@ -17,9 +17,7 @@ limitations under the License.
 package e2b
 
 import (
-	"math"
 	"net/http"
-	"strconv"
 	"time"
 
 	sandboxmanager "github.com/openkruise/agents/pkg/sandbox-manager"
@@ -34,7 +32,6 @@ func (sc *Controller) RefreshTrafficAccessToken(r *http.Request) (web.ApiRespons
 	if user == nil {
 		return web.ApiResponse[*models.TrafficAccessToken]{}, trafficTokenAPIError(
 			managererrors.NewError(managererrors.ErrorNotAllowed, "authenticated user is required"),
-			sc.mgrOpts.TrafficAccessToken.RefreshMinInterval,
 		)
 	}
 	result, err := sc.manager.RefreshTrafficAccessToken(r.Context(), sandboxmanager.RefreshTrafficAccessTokenOptions{
@@ -43,7 +40,7 @@ func (sc *Controller) RefreshTrafficAccessToken(r *http.Request) (web.ApiRespons
 		User:      user.ID.String(),
 	})
 	if err != nil {
-		return web.ApiResponse[*models.TrafficAccessToken]{}, trafficTokenAPIError(err, sc.mgrOpts.TrafficAccessToken.RefreshMinInterval)
+		return web.ApiResponse[*models.TrafficAccessToken]{}, trafficTokenAPIError(err)
 	}
 	return web.ApiResponse[*models.TrafficAccessToken]{
 		Code: http.StatusOK,
@@ -54,7 +51,7 @@ func (sc *Controller) RefreshTrafficAccessToken(r *http.Request) (web.ApiRespons
 	}, nil
 }
 
-func trafficTokenAPIError(err error, retryAfter time.Duration) *web.ApiError {
+func trafficTokenAPIError(err error) *web.ApiError {
 	apiErr := &web.ApiError{Code: http.StatusInternalServerError, Message: "Failed to refresh traffic access token"}
 	switch managererrors.GetErrCode(err) {
 	case managererrors.ErrorBadRequest:
@@ -66,14 +63,6 @@ func trafficTokenAPIError(err error, retryAfter time.Duration) *web.ApiError {
 	case managererrors.ErrorConflict:
 		apiErr.Code = http.StatusConflict
 		apiErr.Message = "Sandbox cannot refresh its traffic access token"
-	case managererrors.ErrorRateLimited:
-		apiErr.Code = http.StatusTooManyRequests
-		apiErr.Message = "Traffic access token refresh is rate limited"
-		seconds := int(math.Ceil(retryAfter.Seconds()))
-		if seconds < 1 {
-			seconds = 1
-		}
-		apiErr.Headers = map[string]string{"Retry-After": strconv.Itoa(seconds)}
 	case managererrors.ErrorUnavailable:
 		apiErr.Code = http.StatusServiceUnavailable
 		apiErr.Message = "Traffic access token issuer is unavailable"
