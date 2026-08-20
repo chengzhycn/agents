@@ -107,7 +107,6 @@ func main() {
 	var trafficTokenValidity time.Duration
 	var trafficTokenMinValidity time.Duration
 	var trafficTokenMaxValidity time.Duration
-	var trafficTokenRefreshMinInterval time.Duration
 
 	utilfeature.DefaultMutableFeatureGate.AddFlag(pflag.CommandLine)
 
@@ -162,7 +161,6 @@ func main() {
 	pflag.DurationVar(&trafficTokenValidity, "traffic-access-token-validity", config.DefaultTrafficAccessTokenValidity, "Validity requested for traffic access tokens.")
 	pflag.DurationVar(&trafficTokenMinValidity, "traffic-access-token-min-validity", config.DefaultTrafficAccessTokenMinValidity, "Minimum allowed traffic access token validity.")
 	pflag.DurationVar(&trafficTokenMaxValidity, "traffic-access-token-max-validity", config.DefaultTrafficAccessTokenMaxValidity, "Maximum allowed traffic access token validity.")
-	pflag.DurationVar(&trafficTokenRefreshMinInterval, "traffic-access-token-refresh-min-interval", config.DefaultTrafficAccessTokenRefreshMinInterval, "Minimum interval between traffic access token refresh attempts for one Sandbox.")
 
 	// Tracing flags (definitions shared with agent-sandbox-controller via
 	// tracing.Config.BindFlags; pulled into pflag by AddGoFlagSet below)
@@ -221,7 +219,6 @@ func main() {
 	}
 	trafficTokenOpts := config.TrafficAccessTokenOptions{
 		Validity: trafficTokenValidity, MinValidity: trafficTokenMinValidity, MaxValidity: trafficTokenMaxValidity,
-		RefreshMinInterval: trafficTokenRefreshMinInterval,
 	}
 
 	if maxClaimWorkers < 0 {

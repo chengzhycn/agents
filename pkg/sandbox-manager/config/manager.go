@@ -36,18 +36,14 @@ const (
 	// DefaultTrafficAccessTokenMaxValidity is the default upper bound for the
 	// configured traffic access token validity.
 	DefaultTrafficAccessTokenMaxValidity = DefaultTrafficAccessTokenValidity
-	// DefaultTrafficAccessTokenRefreshMinInterval reuses a recent successful
-	// issuance for one Sandbox to avoid signing duplicate tokens.
-	DefaultTrafficAccessTokenRefreshMinInterval = 30 * time.Second
 )
 
 // TrafficAccessTokenOptions defines sandbox-manager's traffic-token lifetime
 // policy. API callers cannot override these values.
 type TrafficAccessTokenOptions struct {
-	Validity           time.Duration
-	MinValidity        time.Duration
-	MaxValidity        time.Duration
-	RefreshMinInterval time.Duration
+	Validity    time.Duration
+	MinValidity time.Duration
+	MaxValidity time.Duration
 }
 
 // QuotaOptions holds runtime configuration for API-key quota enforcement.
@@ -104,9 +100,6 @@ func InitOptions(opts SandboxManagerOptions) SandboxManagerOptions {
 	if opts.TrafficAccessToken.MaxValidity <= 0 {
 		opts.TrafficAccessToken.MaxValidity = DefaultTrafficAccessTokenMaxValidity
 	}
-	if opts.TrafficAccessToken.RefreshMinInterval <= 0 {
-		opts.TrafficAccessToken.RefreshMinInterval = DefaultTrafficAccessTokenRefreshMinInterval
-	}
 	// Quota defaults
 	if opts.Quota.OperationTimeout <= 0 {
 		opts.Quota.OperationTimeout = consts.DefaultQuotaRedisOperationTimeout
@@ -136,12 +129,6 @@ func ValidateTrafficAccessTokenOptions(opts TrafficAccessTokenOptions) error {
 	}
 	if opts.Validity < opts.MinValidity || opts.Validity > opts.MaxValidity {
 		return fmt.Errorf("traffic access token validity must be between %s and %s", opts.MinValidity, opts.MaxValidity)
-	}
-	if opts.RefreshMinInterval <= 0 {
-		return fmt.Errorf("traffic access token refresh minimum interval must be positive")
-	}
-	if opts.RefreshMinInterval >= opts.MinValidity {
-		return fmt.Errorf("traffic access token refresh minimum interval must be less than minimum validity")
 	}
 	return nil
 }

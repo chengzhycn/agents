@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -80,14 +79,14 @@ func NewSandboxManagerBuilder(opts config.SandboxManagerOptions) *SandboxManager
 	opts = config.InitOptions(opts)
 	return &SandboxManagerBuilder{
 		instance: &SandboxManager{
-			proxy:               proxy.NewServer(opts),
-			memberlistBindPort:  opts.MemberlistBindPort,
-			systemNamespace:     opts.SystemNamespace,
-			enableShortID:       opts.EnableShortSandboxID,
-			shortIDPrefix:       opts.ShortSandboxIDPrefix,
-			primary:             &primaryState{},
-			trafficTokenOptions: identity.TokenOptions{RequestedValidity: opts.TrafficAccessToken.Validity},
-			trafficTokenLimiter: newTrafficTokenLimiter(opts.TrafficAccessToken.RefreshMinInterval, time.Now),
+			proxy:                    proxy.NewServer(opts),
+			memberlistBindPort:       opts.MemberlistBindPort,
+			systemNamespace:          opts.SystemNamespace,
+			enableShortID:            opts.EnableShortSandboxID,
+			shortIDPrefix:            opts.ShortSandboxIDPrefix,
+			primary:                  &primaryState{},
+			trafficTokenOptions:      identity.TokenOptions{RequestedValidity: opts.TrafficAccessToken.Validity},
+			trafficTokenSingleflight: newTrafficTokenSingleflight(),
 		},
 		opts: opts,
 	}
@@ -244,8 +243,8 @@ type SandboxManager struct {
 	quotaAntiDrift   *quota.AntiDriftDriver // nil when Redis is not configured
 	quotaRedisClient RedisClient            // nil when Redis is not configured
 
-	trafficTokenOptions identity.TokenOptions
-	trafficTokenLimiter *trafficTokenLimiter
+	trafficTokenOptions      identity.TokenOptions
+	trafficTokenSingleflight *trafficTokenSingleflight
 }
 
 // InitQuota initializes the quota subsystem. Call after Build() so that m.infra is available.

@@ -59,10 +59,10 @@ patch_traffic_access_token()
 When a Sandbox is configured for Traffic JWT authentication, the patch keeps
 its token in memory and refreshes it before expiration. Sync and async envd
 HTTP/RPC requests and code-interpreter Jupyter requests read the latest token
-immediately before sending. Concurrent refreshes for one Sandbox are combined
-into one request, and a recent successful result is reused during the configured
-minimum refresh interval so multiple tokenless clients can bootstrap. Legacy
-opaque traffic tokens keep their existing behavior and do not enable
+immediately before sending. Refreshes for one Sandbox that overlap on the same
+sandbox-manager replica are combined into one issuance. The completed result is
+not cached by sandbox-manager; a later refresh request issues a new token.
+Legacy opaque traffic tokens keep their existing behavior and do not enable
 expiration-based refresh.
 
 Connect only resumes or extends the Sandbox and does not issue a token. A

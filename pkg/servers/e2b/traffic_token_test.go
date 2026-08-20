@@ -19,6 +19,7 @@ package e2b
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -44,9 +45,9 @@ type e2bTrafficTokenProvider struct {
 }
 
 func (p *e2bTrafficTokenProvider) IssueToken(_ context.Context, _ *v1alpha1.Sandbox, opts identity.TokenOptions) (*identity.TokenResponse, error) {
-	p.calls.Add(1)
+	call := p.calls.Add(1)
 	return &identity.TokenResponse{
-		AccessToken:           "refreshed-jwt",
+		AccessToken:           fmt.Sprintf("refreshed-jwt-%d", call),
 		AccessTokenExpiration: time.Now().Add(opts.RequestedValidity).UTC().Format(time.RFC3339),
 	}, nil
 }
@@ -58,7 +59,8 @@ func (*e2bTrafficTokenProvider) PropagateSecurityToken(context.Context, *v1alpha
 func TestRefreshTrafficAccessToken(t *testing.T) {
 	controller, client, teardown := Setup(t)
 	defer teardown()
-	identity.RegisterProvider(&e2bTrafficTokenProvider{})
+	provider := &e2bTrafficTokenProvider{}
+	identity.RegisterProvider(provider)
 	t.Cleanup(func() { identity.RegisterProvider(identity.NewDefaultIdentityProvider()) })
 
 	sandbox := &v1alpha1.Sandbox{
@@ -90,13 +92,14 @@ func TestRefreshTrafficAccessToken(t *testing.T) {
 	response, apiErr := controller.RefreshTrafficAccessToken(request)
 	require.Nil(t, apiErr)
 	require.NotNil(t, response.Body)
-	assert.Equal(t, "refreshed-jwt", response.Body.TrafficAccessToken)
+	assert.Equal(t, "refreshed-jwt-1", response.Body.TrafficAccessToken)
 	assert.NotEmpty(t, response.Body.TrafficAccessTokenExpiration)
 
-	cached, apiErr := controller.RefreshTrafficAccessToken(request)
+	second, apiErr := controller.RefreshTrafficAccessToken(request)
 	require.Nil(t, apiErr)
-	require.NotNil(t, cached.Body)
-	assert.Equal(t, response.Body, cached.Body)
+	require.NotNil(t, second.Body)
+	assert.Equal(t, "refreshed-jwt-2", second.Body.TrafficAccessToken)
+	assert.Equal(t, int32(2), provider.calls.Load())
 }
 
 func TestTrafficAccessTokenRouteIsKruiseOnly(t *testing.T) {

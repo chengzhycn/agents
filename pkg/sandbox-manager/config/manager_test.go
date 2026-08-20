@@ -57,7 +57,6 @@ func TestInitOptions(t *testing.T) {
 			expectMemberlistBindPort: DefaultMemberlistBindPort,
 			expectTrafficToken: TrafficAccessTokenOptions{
 				Validity: DefaultTrafficAccessTokenValidity, MinValidity: DefaultTrafficAccessTokenMinValidity, MaxValidity: DefaultTrafficAccessTokenMaxValidity,
-				RefreshMinInterval: DefaultTrafficAccessTokenRefreshMinInterval,
 			},
 		},
 		{
@@ -69,7 +68,7 @@ func TestInitOptions(t *testing.T) {
 				MaxCreateQPS:          20,
 				MemberlistBindPort:    9000,
 				TrafficAccessToken: TrafficAccessTokenOptions{
-					Validity: 2 * time.Hour, MinValidity: time.Hour, MaxValidity: 3 * time.Hour, RefreshMinInterval: time.Minute,
+					Validity: 2 * time.Hour, MinValidity: time.Hour, MaxValidity: 3 * time.Hour,
 				},
 			},
 			expectSystemNamespace:    "custom-namespace",
@@ -78,7 +77,7 @@ func TestInitOptions(t *testing.T) {
 			expectMaxCreateQPS:       20,
 			expectMemberlistBindPort: 9000,
 			expectTrafficToken: TrafficAccessTokenOptions{
-				Validity: 2 * time.Hour, MinValidity: time.Hour, MaxValidity: 3 * time.Hour, RefreshMinInterval: time.Minute,
+				Validity: 2 * time.Hour, MinValidity: time.Hour, MaxValidity: 3 * time.Hour,
 			},
 		},
 		{
@@ -235,7 +234,6 @@ func TestInitOptions(t *testing.T) {
 				assert.Equal(t, DefaultTrafficAccessTokenValidity, result.TrafficAccessToken.Validity)
 				assert.Equal(t, DefaultTrafficAccessTokenMinValidity, result.TrafficAccessToken.MinValidity)
 				assert.Equal(t, DefaultTrafficAccessTokenMaxValidity, result.TrafficAccessToken.MaxValidity)
-				assert.Equal(t, DefaultTrafficAccessTokenRefreshMinInterval, result.TrafficAccessToken.RefreshMinInterval)
 			} else {
 				assert.Equal(t, tt.expectTrafficToken, result.TrafficAccessToken)
 			}
@@ -260,14 +258,11 @@ func TestValidateTrafficAccessTokenOptions(t *testing.T) {
 		opts        TrafficAccessTokenOptions
 		expectError string
 	}{
-		{name: "valid", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 5 * time.Minute, MaxValidity: 24 * time.Hour, RefreshMinInterval: time.Minute}},
-		{name: "non-positive minimum", opts: TrafficAccessTokenOptions{Validity: time.Hour, MaxValidity: 24 * time.Hour, RefreshMinInterval: time.Minute}, expectError: "minimum validity"},
-		{name: "maximum below minimum", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 2 * time.Hour, MaxValidity: time.Hour, RefreshMinInterval: time.Minute}, expectError: "maximum validity"},
-		{name: "validity below minimum", opts: TrafficAccessTokenOptions{Validity: time.Minute, MinValidity: 5 * time.Minute, MaxValidity: time.Hour, RefreshMinInterval: time.Minute}, expectError: "must be between"},
-		{name: "validity above maximum", opts: TrafficAccessTokenOptions{Validity: 2 * time.Hour, MinValidity: 5 * time.Minute, MaxValidity: time.Hour, RefreshMinInterval: time.Minute}, expectError: "must be between"},
-		{name: "non-positive refresh interval", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 5 * time.Minute, MaxValidity: 24 * time.Hour}, expectError: "refresh minimum interval"},
-		{name: "refresh interval equal to minimum validity", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 5 * time.Minute, MaxValidity: 24 * time.Hour, RefreshMinInterval: 5 * time.Minute}, expectError: "less than minimum validity"},
-		{name: "refresh interval above minimum validity", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 5 * time.Minute, MaxValidity: 24 * time.Hour, RefreshMinInterval: 6 * time.Minute}, expectError: "less than minimum validity"},
+		{name: "valid", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 5 * time.Minute, MaxValidity: 24 * time.Hour}},
+		{name: "non-positive minimum", opts: TrafficAccessTokenOptions{Validity: time.Hour, MaxValidity: 24 * time.Hour}, expectError: "minimum validity"},
+		{name: "maximum below minimum", opts: TrafficAccessTokenOptions{Validity: time.Hour, MinValidity: 2 * time.Hour, MaxValidity: time.Hour}, expectError: "maximum validity"},
+		{name: "validity below minimum", opts: TrafficAccessTokenOptions{Validity: time.Minute, MinValidity: 5 * time.Minute, MaxValidity: time.Hour}, expectError: "must be between"},
+		{name: "validity above maximum", opts: TrafficAccessTokenOptions{Validity: 2 * time.Hour, MinValidity: 5 * time.Minute, MaxValidity: time.Hour}, expectError: "must be between"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -129,7 +129,7 @@ func TestSandboxManagerRefreshTrafficAccessToken(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			manager, client := setupTestManager(t, config.SandboxManagerOptions{})
 			manager.trafficTokenOptions = identity.TokenOptions{RequestedValidity: time.Hour}
-			manager.trafficTokenLimiter = newTrafficTokenLimiter(time.Minute, time.Now)
+			manager.trafficTokenSingleflight = newTrafficTokenSingleflight()
 			sandbox := getSandboxForApiTest(tt.name)
 			sandbox.UID = types.UID("uid-" + tt.name)
 			sandbox.Annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.True
@@ -176,12 +176,12 @@ func TestSandboxManagerRefreshTrafficAccessToken(t *testing.T) {
 	}
 }
 
-func TestSandboxManagerRefreshTrafficAccessTokenReusesRecentToken(t *testing.T) {
+func TestSandboxManagerRefreshTrafficAccessTokenDoesNotReuseCompletedToken(t *testing.T) {
 	manager, client := setupTestManager(t, config.SandboxManagerOptions{})
-	manager.trafficTokenOptions = identity.TokenOptions{RequestedValidity: 2 * time.Hour}
-	manager.trafficTokenLimiter = newTrafficTokenLimiter(time.Hour, time.Now)
-	sandbox := getSandboxForApiTest("cache-reuse")
-	sandbox.UID = "cache-reuse-uid"
+	manager.trafficTokenOptions = identity.TokenOptions{RequestedValidity: time.Hour}
+	manager.trafficTokenSingleflight = newTrafficTokenSingleflight()
+	sandbox := getSandboxForApiTest("no-result-reuse")
+	sandbox.UID = "no-result-reuse-uid"
 	sandbox.Annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.True
 	sandbox.Status.Conditions = []metav1.Condition{{Type: string(v1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue}}
 	CreateSandboxWithStatus(t, client, sandbox)
@@ -194,18 +194,17 @@ func TestSandboxManagerRefreshTrafficAccessTokenReusesRecentToken(t *testing.T) 
 	identity.RegisterProvider(provider)
 	t.Cleanup(func() { identity.RegisterProvider(identity.NewDefaultIdentityProvider()) })
 	opts := RefreshTrafficAccessTokenOptions{SandboxID: sandboxID, User: testUser}
-	first, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
+	_, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
 	require.NoError(t, err)
-	second, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
+	_, err = manager.RefreshTrafficAccessToken(t.Context(), opts)
 	require.NoError(t, err)
-	assert.Equal(t, first, second)
-	assert.Equal(t, int32(1), provider.calls.Load())
+	assert.Equal(t, int32(2), provider.calls.Load())
 }
 
 func TestSandboxManagerConcurrentRefreshTrafficAccessTokenCoalesces(t *testing.T) {
 	manager, client := setupTestManager(t, config.SandboxManagerOptions{})
 	manager.trafficTokenOptions = identity.TokenOptions{RequestedValidity: time.Hour}
-	manager.trafficTokenLimiter = newTrafficTokenLimiter(time.Hour, time.Now)
+	manager.trafficTokenSingleflight = newTrafficTokenSingleflight()
 	sandbox := getSandboxForApiTest("concurrent-refresh")
 	sandbox.UID = "concurrent-refresh-uid"
 	sandbox.Annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.True
@@ -244,10 +243,10 @@ func TestSandboxManagerConcurrentRefreshTrafficAccessTokenCoalesces(t *testing.T
 	assert.Equal(t, int32(1), provider.calls.Load())
 }
 
-func TestSandboxManagerTrafficAccessTokenLimitIsPerSandbox(t *testing.T) {
+func TestSandboxManagerTrafficAccessTokenSingleflightIsPerSandbox(t *testing.T) {
 	manager, client := setupTestManager(t, config.SandboxManagerOptions{})
 	manager.trafficTokenOptions = identity.TokenOptions{RequestedValidity: time.Hour}
-	manager.trafficTokenLimiter = newTrafficTokenLimiter(time.Hour, time.Now)
+	manager.trafficTokenSingleflight = newTrafficTokenSingleflight()
 	sandboxNames := []string{"parallel-a", "parallel-b", "parallel-c"}
 	sandboxIDs := make([]string, 0, len(sandboxNames))
 	for _, name := range sandboxNames {
@@ -290,7 +289,7 @@ func TestSandboxManagerTrafficAccessTokenLimitIsPerSandbox(t *testing.T) {
 		select {
 		case <-provider.started:
 		case <-time.After(time.Second):
-			t.Fatal("traffic token issuance for different Sandboxes was serialized or rate limited")
+			t.Fatal("traffic token issuance for different Sandboxes was serialized")
 		}
 	}
 	close(provider.unblock)
@@ -301,38 +300,33 @@ func TestSandboxManagerTrafficAccessTokenLimitIsPerSandbox(t *testing.T) {
 	assert.Equal(t, int32(len(sandboxIDs)), provider.calls.Load())
 }
 
-func TestTrafficTokenLimiter(t *testing.T) {
-	now := time.Now()
-	limiter := newTrafficTokenLimiter(time.Minute, func() time.Time { return now })
-	flight, _, leader := limiter.acquire("sandbox-a")
+func TestTrafficTokenSingleflight(t *testing.T) {
+	singleflight := newTrafficTokenSingleflight()
+	flight, leader := singleflight.acquire("sandbox-a")
 	assert.True(t, leader)
-	joined, _, leader := limiter.acquire("sandbox-a")
+	joined, leader := singleflight.acquire("sandbox-a")
 	assert.False(t, leader)
 	assert.Same(t, flight, joined)
-	limiter.complete("sandbox-a", flight, infra.TrafficAccessToken{Token: "token", Expiration: now.Add(time.Hour)}, nil)
-	now = now.Add(30 * time.Second)
-	flight, cached, leader := limiter.acquire("sandbox-a")
-	assert.Nil(t, flight)
+	singleflight.complete("sandbox-a", flight, infra.TrafficAccessToken{Token: "token"}, nil)
+	assert.Equal(t, "token", joined.result.Token)
+	assert.Empty(t, singleflight.flights)
+
+	next, leader := singleflight.acquire("sandbox-a")
+	assert.True(t, leader)
+	assert.NotSame(t, flight, next, "a completed result must not be reused")
+	singleflight.complete("sandbox-a", next, infra.TrafficAccessToken{Token: "next-token"}, nil)
+
+	failed, leader := singleflight.acquire("sandbox-failed")
+	assert.True(t, leader)
+	failedFollower, leader := singleflight.acquire("sandbox-failed")
 	assert.False(t, leader)
-	assert.Equal(t, "token", cached.Token)
-	now = now.Add(30 * time.Second)
-	flight, _, leader = limiter.acquire("sandbox-a")
+	rootErr := errors.New("issuer unavailable")
+	singleflight.complete("sandbox-failed", failed, infra.TrafficAccessToken{}, rootErr)
+	<-failedFollower.done
+	assert.ErrorIs(t, failedFollower.err, rootErr)
+	assert.Empty(t, singleflight.flights)
+	retry, leader := singleflight.acquire("sandbox-failed")
 	assert.True(t, leader)
-	limiter.complete("sandbox-a", flight, infra.TrafficAccessToken{Token: "token", Expiration: now.Add(time.Hour)}, nil)
-
-	shortLived, _, leader := limiter.acquire("sandbox-short-lived")
-	assert.True(t, leader)
-	limiter.complete("sandbox-short-lived", shortLived, infra.TrafficAccessToken{Token: "short-lived", Expiration: now.Add(30 * time.Second)}, nil)
-	shortLived, _, leader = limiter.acquire("sandbox-short-lived")
-	assert.NotNil(t, shortLived, "a token with less validity than the reuse interval must not be cached")
-	assert.True(t, leader)
-	limiter.complete("sandbox-short-lived", shortLived, infra.TrafficAccessToken{Token: "replacement", Expiration: now.Add(time.Hour)}, nil)
-
-	failed, _, leader := limiter.acquire("sandbox-failed")
-	assert.True(t, leader)
-	limiter.complete("sandbox-failed", failed, infra.TrafficAccessToken{}, errors.New("issuer unavailable"))
-	failed, _, leader = limiter.acquire("sandbox-failed")
-	require.NotNil(t, failed, "failed issuance must not consume the refresh interval")
-	assert.True(t, leader)
-	limiter.complete("sandbox-failed", failed, infra.TrafficAccessToken{Token: "retry-token", Expiration: now.Add(time.Hour)}, nil)
+	assert.NotSame(t, failed, retry)
+	singleflight.complete("sandbox-failed", retry, infra.TrafficAccessToken{Token: "retry-token"}, nil)
 }
