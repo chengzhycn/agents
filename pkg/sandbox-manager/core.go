@@ -87,6 +87,7 @@ func NewSandboxManagerBuilder(opts config.SandboxManagerOptions) *SandboxManager
 			primary:                  &primaryState{},
 			trafficTokenOptions:      identity.TokenOptions{RequestedValidity: opts.TrafficAccessToken.Validity},
 			trafficTokenSingleflight: newTrafficTokenSingleflight(),
+			trafficTokenIssues:       trafficTokenIssueLifecycle{timeout: defaultTrafficTokenIssueTimeout},
 		},
 		opts: opts,
 	}
@@ -245,6 +246,7 @@ type SandboxManager struct {
 
 	trafficTokenOptions      identity.TokenOptions
 	trafficTokenSingleflight *trafficTokenSingleflight
+	trafficTokenIssues       trafficTokenIssueLifecycle
 }
 
 // InitQuota initializes the quota subsystem. Call after Build() so that m.infra is available.
@@ -347,6 +349,7 @@ func (m *SandboxManager) Run(ctx context.Context) error {
 	if err := m.infra.Run(ctx); err != nil {
 		return err
 	}
+	m.trafficTokenIssues.init(ctx)
 	if m.enableShortID {
 		if err := m.initializeSandboxIDGenerator(ctx); err != nil {
 			return err
@@ -382,6 +385,9 @@ func (m *SandboxManager) initializeSandboxIDGenerator(ctx context.Context) error
 
 func (m *SandboxManager) Stop(ctx context.Context) {
 	log := klog.FromContext(ctx)
+	if err := m.trafficTokenIssues.stop(ctx); err != nil {
+		log.Error(err, "failed to stop traffic access token issuance")
+	}
 	if m.elector != nil {
 		m.elector.Stop(ctx)
 	}

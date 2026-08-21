@@ -19,13 +19,21 @@ package sandbox_manager
 import (
 	"context"
 	"errors"
+	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/openkruise/agents/api/v1alpha1"
 	managererrors "github.com/openkruise/agents/pkg/sandbox-manager/errors"
 	"github.com/openkruise/agents/pkg/sandbox-manager/infra"
 	"k8s.io/klog/v2"
 )
+
+// defaultTrafficTokenIssueTimeout bounds detached provider calls and leaves
+// headroom for the process-level shutdown timeout to drain other components.
+const defaultTrafficTokenIssueTimeout = 30 * time.Second
+
+var errTrafficTokenIssuerPanic = errors.New("traffic access token issuer panicked")
 
 // RefreshTrafficAccessTokenOptions identifies the caller and Sandbox for an
 // explicit traffic-token refresh.
@@ -71,42 +79,131 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 		flightKey = opts.SandboxID
 	}
 	flight, leader := m.trafficTokenSingleflight.acquire(flightKey)
-	if !leader {
-		// Only the leader owns flight completion. A follower may stop waiting or
-		// consume the published result, but must not clear or close the shared
-		// flight; the leader does that after issuance returns.
-		select {
-		case <-ctx.Done():
-			klog.FromContext(ctx).Error(ctx.Err(), "failed waiting for traffic access token issuance", "sandboxID", opts.SandboxID)
-			return infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorUnavailable, "waiting for traffic access token issuance: %v", ctx.Err())
-		case <-flight.done:
-			if flight.err != nil {
-				return infra.TrafficAccessToken{}, flight.err
-			}
-			return flight.result, nil
+	if leader {
+		// The result is shared with every waiter, so one HTTP client's
+		// cancellation must not abort issuance for other callers. The independent
+		// timeout carried by the lifecycle keeps the detached provider call bounded.
+		issueCtx, finishIssue, ok := m.trafficTokenIssues.begin(ctx)
+		if !ok {
+			m.trafficTokenSingleflight.complete(flightKey, flight, infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorUnavailable, "sandbox manager is stopping"))
+		} else {
+			go func() {
+				var result infra.TrafficAccessToken
+				var issueErr error
+				defer func() {
+					panicked := recover() != nil
+					if panicked {
+						result = infra.TrafficAccessToken{}
+						issueErr = managererrors.NewError(managererrors.ErrorInternal, "failed to issue traffic access token")
+					}
+					m.trafficTokenSingleflight.complete(flightKey, flight, result, issueErr)
+					finishIssue()
+					if panicked {
+						klog.FromContext(issueCtx).Error(errTrafficTokenIssuerPanic, "panic issuing traffic access token",
+							"sandboxID", opts.SandboxID,
+							"stack", string(debug.Stack()))
+					}
+				}()
+
+				result, issueErr = m.infra.IssueTrafficAccessToken(issueCtx, infra.IssueTrafficAccessTokenOptions{
+					Namespace:    opts.Namespace,
+					SandboxID:    opts.SandboxID,
+					TokenOptions: m.trafficTokenOptions,
+					Validate: func(sandbox infra.Sandbox) error {
+						return validateTrafficTokenSandbox(sandbox, opts.User)
+					},
+				})
+				if issueErr != nil && managererrors.GetErrCode(issueErr) == managererrors.ErrorUnknown {
+					if errors.Is(issueErr, infra.ErrSandboxNotFound) {
+						issueErr = managererrors.NewError(managererrors.ErrorNotFound, "sandbox %s not found", opts.SandboxID)
+					} else {
+						issueErr = managererrors.WrapError(managererrors.ErrorUnavailable, issueErr, "failed to issue traffic access token: %v", issueErr)
+					}
+				}
+			}()
 		}
 	}
 
-	result, issueErr := m.infra.IssueTrafficAccessToken(ctx, infra.IssueTrafficAccessTokenOptions{
-		Namespace:    opts.Namespace,
-		SandboxID:    opts.SandboxID,
-		TokenOptions: m.trafficTokenOptions,
-		Validate: func(sandbox infra.Sandbox) error {
-			return validateTrafficTokenSandbox(sandbox, opts.User)
-		},
-	})
-	if issueErr != nil && managererrors.GetErrCode(issueErr) == managererrors.ErrorUnknown {
-		if errors.Is(issueErr, infra.ErrSandboxNotFound) {
-			issueErr = managererrors.NewError(managererrors.ErrorNotFound, "sandbox %s not found", opts.SandboxID)
+	select {
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.Canceled) {
+			klog.FromContext(ctx).V(2).Info("stopped waiting for traffic access token issuance", "sandboxID", opts.SandboxID, "reason", ctx.Err())
 		} else {
-			issueErr = managererrors.NewError(managererrors.ErrorUnavailable, "failed to issue traffic access token: %v", issueErr)
+			klog.FromContext(ctx).Error(ctx.Err(), "failed waiting for traffic access token issuance", "sandboxID", opts.SandboxID)
 		}
+		return infra.TrafficAccessToken{}, managererrors.WrapError(managererrors.ErrorUnavailable, ctx.Err(), "waiting for traffic access token issuance")
+	case <-flight.done:
+		if flight.err != nil {
+			return infra.TrafficAccessToken{}, flight.err
+		}
+		return flight.result, nil
 	}
-	m.trafficTokenSingleflight.complete(flightKey, flight, result, issueErr)
-	if issueErr != nil {
-		return infra.TrafficAccessToken{}, issueErr
+}
+
+type trafficTokenIssueLifecycle struct {
+	mu      sync.Mutex
+	ctx     context.Context
+	cancel  context.CancelFunc
+	stopped bool
+	wg      sync.WaitGroup
+	// timeout bounds each detached issuance. A non-positive value falls back to
+	// defaultTrafficTokenIssueTimeout.
+	timeout time.Duration
+}
+
+func (l *trafficTokenIssueLifecycle) init(parent context.Context) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ctx == nil && !l.stopped {
+		l.ctx, l.cancel = context.WithCancel(parent)
 	}
-	return result, nil
+}
+
+func (l *trafficTokenIssueLifecycle) begin(requestCtx context.Context) (context.Context, func(), bool) {
+	l.mu.Lock()
+	if l.stopped {
+		l.mu.Unlock()
+		return nil, nil, false
+	}
+	if l.ctx == nil {
+		l.ctx, l.cancel = context.WithCancel(context.Background())
+	}
+	lifecycleCtx := l.ctx
+	timeout := l.timeout
+	l.wg.Add(1)
+	l.mu.Unlock()
+
+	if timeout <= 0 {
+		timeout = defaultTrafficTokenIssueTimeout
+	}
+	issueCtx, cancel := context.WithTimeout(context.WithoutCancel(requestCtx), timeout)
+	stopLifecycleCancel := context.AfterFunc(lifecycleCtx, cancel)
+	return issueCtx, func() {
+		stopLifecycleCancel()
+		cancel()
+		l.wg.Done()
+	}, true
+}
+
+func (l *trafficTokenIssueLifecycle) stop(ctx context.Context) error {
+	l.mu.Lock()
+	l.stopped = true
+	if l.cancel != nil {
+		l.cancel()
+	}
+	l.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		l.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
 }
 
 func validateTrafficTokenSandbox(sandbox infra.Sandbox, user string) error {

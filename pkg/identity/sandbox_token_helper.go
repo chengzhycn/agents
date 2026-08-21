@@ -18,6 +18,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -147,7 +148,11 @@ func IssueSandboxAccessToken(ctx context.Context, sbx *agentsv1alpha1.Sandbox, o
 	accessResp, err := IssueToken(ctx, sbx, opts)
 	cost := time.Since(start)
 	if err != nil {
-		log.Error(err, "failed to issue sandbox access token", "cost", cost)
+		if errors.Is(err, context.Canceled) {
+			log.V(2).Info("sandbox access token issuance canceled", "cost", cost)
+		} else {
+			log.Error(err, "failed to issue sandbox access token", "cost", cost)
+		}
 		return nil, fmt.Errorf("failed to issue access token: %w", err)
 	}
 	if err = validateAccessTokenResponse(accessResp); err != nil {

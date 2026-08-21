@@ -106,6 +106,19 @@ func (*parallelTrafficTokenTestProvider) PropagateSecurityToken(context.Context,
 	return nil
 }
 
+type panickingTrafficTokenTestProvider struct {
+	calls atomic.Int32
+}
+
+func (p *panickingTrafficTokenTestProvider) IssueToken(context.Context, *v1alpha1.Sandbox, identity.TokenOptions) (*identity.TokenResponse, error) {
+	p.calls.Add(1)
+	panic("issuer panic")
+}
+
+func (*panickingTrafficTokenTestProvider) PropagateSecurityToken(context.Context, *v1alpha1.Sandbox, *identity.TokenResponse, ...utilruntime.Option) error {
+	return nil
+}
+
 func TestSandboxManagerRefreshTrafficAccessToken(t *testing.T) {
 	providerErr := errors.New("issuer unavailable")
 	tests := []struct {
@@ -240,6 +253,170 @@ func TestSandboxManagerConcurrentRefreshTrafficAccessTokenCoalesces(t *testing.T
 	require.NoError(t, first.err)
 	require.NoError(t, second.err)
 	assert.Equal(t, first.result, second.result)
+	assert.Equal(t, int32(1), provider.calls.Load())
+}
+
+func TestSandboxManagerTrafficAccessTokenLeaderCancellationDoesNotFailWaiter(t *testing.T) {
+	manager, client := setupTestManager(t, config.SandboxManagerOptions{})
+	manager.trafficTokenOptions = identity.TokenOptions{RequestedValidity: time.Hour}
+	manager.trafficTokenSingleflight = newTrafficTokenSingleflight()
+	manager.trafficTokenIssues.timeout = time.Second
+	sandbox := getSandboxForApiTest("leader-cancellation")
+	sandbox.UID = "leader-cancellation-uid"
+	sandbox.Annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.True
+	sandbox.Status.Conditions = []metav1.Condition{{Type: string(v1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue}}
+	CreateSandboxWithStatus(t, client, sandbox)
+	sandboxID := sandboxid.Resolve(sandbox)
+	require.Eventually(t, func() bool {
+		_, err := manager.infra.GetSandbox(t.Context(), infra.GetSandboxOptions{SandboxID: sandboxID})
+		return err == nil
+	}, time.Second, 10*time.Millisecond)
+
+	provider := &blockingTrafficTokenTestProvider{started: make(chan struct{}), unblock: make(chan struct{})}
+	identity.RegisterProvider(provider)
+	t.Cleanup(func() { identity.RegisterProvider(identity.NewDefaultIdentityProvider()) })
+	opts := RefreshTrafficAccessTokenOptions{SandboxID: sandboxID, User: testUser}
+	type refreshResult struct {
+		result infra.TrafficAccessToken
+		err    error
+	}
+	leaderDone := make(chan refreshResult, 1)
+	waiterDone := make(chan refreshResult, 1)
+	leaderCtx, cancelLeader := context.WithCancel(t.Context())
+	go func() {
+		result, err := manager.RefreshTrafficAccessToken(leaderCtx, opts)
+		leaderDone <- refreshResult{result: result, err: err}
+	}()
+	<-provider.started
+	cancelLeader()
+	go func() {
+		result, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
+		waiterDone <- refreshResult{result: result, err: err}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(provider.unblock)
+
+	leader := <-leaderDone
+	waiter := <-waiterDone
+	require.Error(t, leader.err)
+	assert.Equal(t, managererrors.ErrorUnavailable, managererrors.GetErrCode(leader.err))
+	assert.ErrorIs(t, leader.err, context.Canceled)
+	assert.Empty(t, leader.result)
+	require.NoError(t, waiter.err)
+	assert.Equal(t, "coalesced-token", waiter.result.Token)
+	assert.Equal(t, int32(1), provider.calls.Load())
+}
+
+func TestSandboxManagerTrafficAccessTokenIssueTimeoutFailsAllWaiters(t *testing.T) {
+	manager, client := setupTestManager(t, config.SandboxManagerOptions{})
+	manager.trafficTokenOptions = identity.TokenOptions{RequestedValidity: time.Hour}
+	manager.trafficTokenSingleflight = newTrafficTokenSingleflight()
+	manager.trafficTokenIssues.timeout = 500 * time.Millisecond
+	sandbox := getSandboxForApiTest("issue-timeout")
+	sandbox.UID = "issue-timeout-uid"
+	sandbox.Annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.True
+	sandbox.Status.Conditions = []metav1.Condition{{Type: string(v1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue}}
+	CreateSandboxWithStatus(t, client, sandbox)
+	sandboxID := sandboxid.Resolve(sandbox)
+	require.Eventually(t, func() bool {
+		_, err := manager.infra.GetSandbox(t.Context(), infra.GetSandboxOptions{SandboxID: sandboxID})
+		return err == nil
+	}, time.Second, 10*time.Millisecond)
+
+	provider := &blockingTrafficTokenTestProvider{started: make(chan struct{}), unblock: make(chan struct{})}
+	identity.RegisterProvider(provider)
+	t.Cleanup(func() { identity.RegisterProvider(identity.NewDefaultIdentityProvider()) })
+	opts := RefreshTrafficAccessTokenOptions{SandboxID: sandboxID, User: testUser}
+	errorsByCaller := make(chan error, 2)
+	go func() {
+		_, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
+		errorsByCaller <- err
+	}()
+	<-provider.started
+	go func() {
+		_, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
+		errorsByCaller <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	for range 2 {
+		err := <-errorsByCaller
+		require.Error(t, err)
+		assert.Equal(t, managererrors.ErrorUnavailable, managererrors.GetErrCode(err))
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	}
+	assert.Equal(t, int32(1), provider.calls.Load())
+	assert.Empty(t, manager.trafficTokenSingleflight.flights)
+}
+
+func TestSandboxManagerTrafficAccessTokenProviderPanicCleansFlightAndAllowsRetry(t *testing.T) {
+	manager, client := setupTestManager(t, config.SandboxManagerOptions{})
+	manager.trafficTokenOptions = identity.TokenOptions{RequestedValidity: time.Hour}
+	manager.trafficTokenSingleflight = newTrafficTokenSingleflight()
+	sandbox := getSandboxForApiTest("provider-panic")
+	sandbox.UID = "provider-panic-uid"
+	sandbox.Annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.True
+	sandbox.Status.Conditions = []metav1.Condition{{Type: string(v1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue}}
+	CreateSandboxWithStatus(t, client, sandbox)
+	sandboxID := sandboxid.Resolve(sandbox)
+	require.Eventually(t, func() bool {
+		_, err := manager.infra.GetSandbox(t.Context(), infra.GetSandboxOptions{SandboxID: sandboxID})
+		return err == nil
+	}, time.Second, 10*time.Millisecond)
+
+	provider := &panickingTrafficTokenTestProvider{}
+	identity.RegisterProvider(provider)
+	t.Cleanup(func() { identity.RegisterProvider(identity.NewDefaultIdentityProvider()) })
+	opts := RefreshTrafficAccessTokenOptions{SandboxID: sandboxID, User: testUser}
+	_, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
+	require.Error(t, err)
+	assert.Equal(t, managererrors.ErrorInternal, managererrors.GetErrCode(err))
+	assert.Equal(t, int32(1), provider.calls.Load())
+	assert.Empty(t, manager.trafficTokenSingleflight.flights)
+
+	healthyProvider := &trafficTokenTestProvider{}
+	identity.RegisterProvider(healthyProvider)
+	result, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
+	require.NoError(t, err)
+	assert.Equal(t, "refreshed-token", result.Token)
+	assert.Equal(t, int32(1), healthyProvider.calls.Load())
+}
+
+func TestTrafficTokenIssueLifecycleStopCancelsAndDrainsIssuance(t *testing.T) {
+	manager, client := setupTestManager(t, config.SandboxManagerOptions{})
+	manager.trafficTokenOptions = identity.TokenOptions{RequestedValidity: time.Hour}
+	manager.trafficTokenSingleflight = newTrafficTokenSingleflight()
+	manager.trafficTokenIssues.init(t.Context())
+	sandbox := getSandboxForApiTest("lifecycle-stop")
+	sandbox.UID = "lifecycle-stop-uid"
+	sandbox.Annotations[identity.AnnotationEnableJwtAuth] = v1alpha1.True
+	sandbox.Status.Conditions = []metav1.Condition{{Type: string(v1alpha1.SandboxConditionReady), Status: metav1.ConditionTrue}}
+	CreateSandboxWithStatus(t, client, sandbox)
+	sandboxID := sandboxid.Resolve(sandbox)
+	require.Eventually(t, func() bool {
+		_, err := manager.infra.GetSandbox(t.Context(), infra.GetSandboxOptions{SandboxID: sandboxID})
+		return err == nil
+	}, time.Second, 10*time.Millisecond)
+
+	provider := &blockingTrafficTokenTestProvider{started: make(chan struct{}), unblock: make(chan struct{})}
+	identity.RegisterProvider(provider)
+	t.Cleanup(func() { identity.RegisterProvider(identity.NewDefaultIdentityProvider()) })
+	opts := RefreshTrafficAccessTokenOptions{SandboxID: sandboxID, User: testUser}
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := manager.RefreshTrafficAccessToken(t.Context(), opts)
+		refreshDone <- err
+	}()
+	<-provider.started
+
+	stopCtx, cancelStop := context.WithTimeout(t.Context(), time.Second)
+	defer cancelStop()
+	manager.Stop(stopCtx)
+	err := <-refreshDone
+	require.Error(t, err)
+	assert.Equal(t, managererrors.ErrorUnavailable, managererrors.GetErrCode(err))
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, manager.trafficTokenSingleflight.flights)
 	assert.Equal(t, int32(1), provider.calls.Load())
 }
 
