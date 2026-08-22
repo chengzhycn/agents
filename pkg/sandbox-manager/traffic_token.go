@@ -140,17 +140,36 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 	}
 }
 
+// trafficTokenIssueLifecycle bounds and drains detached traffic-token issuances.
+//
+// Issuance runs in a goroutine detached from the requesting HTTP context so one
+// client's cancellation cannot abort work shared with other waiters. Detachment
+// raises two questions this lifecycle answers:
+//
+//   - Bound: every issuance gets an independent timeout (default 30s), so a
+//     hung provider cannot keep a flight open forever.
+//   - Drain: stop refuses new issuances, cancels every in-flight one through
+//     the lifecycle context, and waits for them to finish before the process
+//     exits.
+//
+// Invariant: the stopped check and the WaitGroup increment in begin happen
+// under the same mutex, so stop's drain can never miss an admitted issuance.
 type trafficTokenIssueLifecycle struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// ctx is the process-level lifecycle context; cancelling it cancels every
+	// in-flight issuance. nil until init or the first begin.
 	ctx     context.Context
 	cancel  context.CancelFunc
 	stopped bool
-	wg      sync.WaitGroup
+	// wg tracks in-flight issuances so stop can drain them.
+	wg sync.WaitGroup
 	// timeout bounds each detached issuance. A non-positive value falls back to
 	// defaultTrafficTokenIssueTimeout.
 	timeout time.Duration
 }
 
+// init binds the lifecycle context to the manager's run context. Called from
+// Run; begin tolerates init never running.
 func (l *trafficTokenIssueLifecycle) init(parent context.Context) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -159,6 +178,19 @@ func (l *trafficTokenIssueLifecycle) init(parent context.Context) {
 	}
 }
 
+// begin admits one detached issuance. It returns:
+//
+//   - issueCtx: context for the issuance goroutine. It carries the request's
+//     values (logger, tracing) but not its cancellation, is bounded by the
+//     lifecycle timeout, and is canceled when the lifecycle stops.
+//   - finish: cleanup the caller must invoke exactly once after issuance
+//     returns (success or panic); it detaches the shutdown hook and reports
+//     completion to stop's drain.
+//   - ok: false once the manager is stopping; the caller must fail the flight
+//     without starting work.
+//
+// If init never ran (a refresh arrives before Run), the lifecycle context
+// falls back to context.Background; stop can still cancel and drain it.
 func (l *trafficTokenIssueLifecycle) begin(requestCtx context.Context) (context.Context, func(), bool) {
 	l.mu.Lock()
 	if l.stopped {
@@ -170,13 +202,21 @@ func (l *trafficTokenIssueLifecycle) begin(requestCtx context.Context) (context.
 	}
 	lifecycleCtx := l.ctx
 	timeout := l.timeout
+	// Admit under the same lock that checks stopped: after stop sets stopped,
+	// no new issuance passes here, and every issuance admitted before that
+	// already incremented wg, so stop's drain observes all of them.
 	l.wg.Add(1)
 	l.mu.Unlock()
 
 	if timeout <= 0 {
 		timeout = defaultTrafficTokenIssueTimeout
 	}
+	// Detach from the request's cancellation while keeping its values, then
+	// cap the detached work with an independent timeout.
 	issueCtx, cancel := context.WithTimeout(context.WithoutCancel(requestCtx), timeout)
+	// Bridge process shutdown into this issuance: when the lifecycle context
+	// is canceled, cancel issueCtx too. finish stops the hook so a completed
+	// issuance does not leak it.
 	stopLifecycleCancel := context.AfterFunc(lifecycleCtx, cancel)
 	return issueCtx, func() {
 		stopLifecycleCancel()
@@ -185,14 +225,27 @@ func (l *trafficTokenIssueLifecycle) begin(requestCtx context.Context) (context.
 	}, true
 }
 
+// stop shuts the lifecycle down in three steps:
+//
+//  1. gate: refuse new issuances (begin returns !ok afterwards);
+//  2. broadcast: cancel the lifecycle context, which fires every shutdown
+//     hook installed by begin and cancels each in-flight issueCtx;
+//  3. drain: wait for every admitted issuance to finish, bounded by ctx so a
+//     hung provider cannot block process shutdown indefinitely.
+//
+// Returns ctx.Err() when the drain times out; callers log and continue.
 func (l *trafficTokenIssueLifecycle) stop(ctx context.Context) error {
 	l.mu.Lock()
+	// Step 1: gate. Pairs with the stopped check in begin.
 	l.stopped = true
 	if l.cancel != nil {
+		// Step 2: broadcast cancellation to all in-flight issuances.
 		l.cancel()
 	}
 	l.mu.Unlock()
 
+	// Step 3: drain. Every begin admitted before the gate closed calls
+	// finish -> wg.Done, so wg.Wait converges once they all return.
 	done := make(chan struct{})
 	go func() {
 		l.wg.Wait()
