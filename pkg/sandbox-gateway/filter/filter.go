@@ -161,9 +161,15 @@ func (f *sandboxFilter) authenticate(header api.RequestHeaderMap, route sandboxr
 		}
 		return f.authenticateJWT(header, route)
 	}
+	// A route that has not opted into JWT enforcement is authenticated by the
+	// EnableAuth baseline below, exactly as it would be with JWT mode off. The two
+	// switches govern disjoint sets of routes, so enabling JWT neither exposes a
+	// route that UUID mode protected nor starts rejecting traffic that an
+	// unauthenticated deployment allowed. The traffic token is still stripped here
+	// because it carries no meaning for a non-opted-in route and must not leak into
+	// the workload.
 	if f.config.EnableJWTAuth {
 		header.Del(f.config.GetTrafficAccessTokenHeader())
-		return api.Continue
 	}
 	if !f.config.EnableAuth {
 		return api.Continue

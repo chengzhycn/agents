@@ -20,6 +20,10 @@ from gateway_utils import get_sandbox_access_token, get_sandbox_uid
 TOKEN_COMMAND = os.environ.get("JWT_E2E_TOKEN_COMMAND", "")
 JWT_AUTH_METADATA_KEY = "security.agents.kruise.io/enable-jwt-auth"
 TRAFFIC_ACCESS_TOKEN_HEADER = "E2B-Traffic-Access-Token"
+# The gateway's own local reply for a failed UUID check. agent-runtime also
+# authenticates x-access-token on its own, so the body is the only way to tell
+# which layer rejected a request.
+GATEWAY_UNAUTHORIZED_BODY = "unauthorized: invalid or missing access token"
 WEBSOCKET_PORT = 8080
 WEBSOCKET_SERVER = r'''
 import base64
@@ -133,8 +137,9 @@ def gateway_request(
     headers = {
         "e2b-sandbox-id": sandbox_id,
         "e2b-sandbox-port": "49983",
-        "x-access-token": runtime_access_token,
     }
+    if runtime_access_token is not None:
+        headers["x-access-token"] = runtime_access_token
     if traffic_access_token is not None:
         headers[TRAFFIC_ACCESS_TOKEN_HEADER] = traffic_access_token
     return requests.get(f"{config.gateway_url}/", headers=headers, timeout=10)
@@ -199,6 +204,16 @@ def test_gateway_traffic_access_token_jwt(sandbox_context, config):
     )
     assert public_response.status_code in (200, 404), public_response.text
 
+    # A Sandbox that has not opted into JWT keeps the UUID baseline, so enabling
+    # JWT mode must not leave it unprotected.
+    public_wrong_token = gateway_request(
+        config, public.sandbox_id, "wrong-runtime-token", None
+    )
+    assert public_wrong_token.status_code == 401, public_wrong_token.text
+    assert GATEWAY_UNAUTHORIZED_BODY in public_wrong_token.text, (
+        public_wrong_token.text
+    )
+
     valid = gateway_request_eventually(
         config, first.sandbox_id, first_runtime_token, first_token
     )
@@ -229,6 +244,77 @@ def test_gateway_traffic_access_token_jwt(sandbox_context, config):
         config, second.sandbox_id, second_runtime_token, first_token
     )
     assert replayed.status_code == 403, replayed.text
+
+
+@pytest.mark.jwt_auth_no_baseline
+def test_gateway_traffic_access_token_jwt_without_uuid_baseline(
+    sandbox_context, config
+):
+    """Verify JWT enforcement while the UUID baseline stays disabled.
+
+    Covers upgrading a gateway that never had authentication enabled straight to
+    JWT mode. Routes without the opt-in annotation must keep admitting the
+    traffic they admitted before, while annotated routes stay fail closed.
+    """
+    protected: Sandbox = sandbox_context.add(
+        Sandbox.create(
+            template=config.templates.code_interpreter,
+            timeout=120,
+            metadata={JWT_AUTH_METADATA_KEY: "true"},
+            headers={"x-request-id": sandbox_context.request_id},
+        )
+    )
+    public: Sandbox = sandbox_context.add(
+        Sandbox.create(
+            template=config.templates.code_interpreter,
+            timeout=120,
+            headers={"x-request-id": sandbox_context.request_id},
+        )
+    )
+    protected_token = issue_traffic_access_token(
+        protected.sandbox_id, get_sandbox_uid(protected.sandbox_id)
+    )
+    protected_runtime_token = get_sandbox_access_token(protected.sandbox_id)
+    public_runtime_token = get_sandbox_access_token(public.sandbox_id)
+    assert protected_runtime_token, (
+        "protected Sandbox is missing its runtime access token"
+    )
+    assert public_runtime_token, "public Sandbox is missing its runtime access token"
+
+    public_response = gateway_request_eventually(
+        config, public.sandbox_id, public_runtime_token, None
+    )
+    assert public_response.status_code in (200, 404), public_response.text
+
+    # Every Sandbox carries a generated runtime access token, so a gateway that
+    # started validating it here would break clients that never sent one. Assert
+    # on the gateway's own rejection body because agent-runtime may still answer
+    # 401 for its own reasons.
+    wrong_runtime_token = gateway_request(
+        config, public.sandbox_id, "wrong-runtime-token", None
+    )
+    assert GATEWAY_UNAUTHORIZED_BODY not in wrong_runtime_token.text, (
+        wrong_runtime_token.text
+    )
+
+    absent_runtime_token = gateway_request(config, public.sandbox_id, None, None)
+    assert GATEWAY_UNAUTHORIZED_BODY not in absent_runtime_token.text, (
+        absent_runtime_token.text
+    )
+
+    # The opted-in column is unaffected by the disabled baseline.
+    valid = gateway_request_eventually(
+        config, protected.sandbox_id, protected_runtime_token, protected_token
+    )
+    assert valid.status_code in (200, 404), valid.text
+
+    missing = gateway_request(config, protected.sandbox_id, protected_runtime_token)
+    assert missing.status_code == 403, missing.text
+
+    malformed = gateway_request(
+        config, protected.sandbox_id, protected_runtime_token, "not-a-jwt"
+    )
+    assert malformed.status_code == 403, malformed.text
 
 
 def test_gateway_traffic_access_token_jwt_with_e2b_sdk(sandbox_context, config):
