@@ -8,21 +8,29 @@ import subprocess
 import time
 
 import pytest
-import requests
 from e2b import PtySize
 from e2b_code_interpreter import Sandbox
 from kruise_agents.patch_traffic_token import patch_traffic_access_token
 from websocket import WebSocketBadStatusException, create_connection
 
-from gateway_utils import get_sandbox_access_token, get_sandbox_uid
+from gateway_utils import (
+    TRAFFIC_ACCESS_TOKEN_HEADER,
+    WORKLOAD_PORT,
+    assert_workload_reached,
+    gateway_request,
+    gateway_request_eventually,
+    get_sandbox_access_token,
+    get_sandbox_uid,
+    start_workload_server,
+)
 
 
 TOKEN_COMMAND = os.environ.get("JWT_E2E_TOKEN_COMMAND", "")
 JWT_AUTH_METADATA_KEY = "security.agents.kruise.io/enable-jwt-auth"
-TRAFFIC_ACCESS_TOKEN_HEADER = "E2B-Traffic-Access-Token"
 # The gateway's own local reply for a failed UUID check. agent-runtime also
-# authenticates x-access-token on its own, so the body is the only way to tell
-# which layer rejected a request.
+# authenticates x-access-token on its own, so on the runtime port the body is the
+# only way to tell which layer rejected a request. Assertions that need an
+# unambiguous answer use WORKLOAD_PORT instead.
 GATEWAY_UNAUTHORIZED_BODY = "unauthorized: invalid or missing access token"
 WEBSOCKET_PORT = 8080
 WEBSOCKET_SERVER = r'''
@@ -131,39 +139,6 @@ def gateway_websocket_url(config) -> str:
     return config.gateway_url.replace("http://", "ws://", 1)
 
 
-def gateway_request(
-    config, sandbox_id, runtime_access_token, traffic_access_token=None
-):
-    headers = {
-        "e2b-sandbox-id": sandbox_id,
-        "e2b-sandbox-port": "49983",
-    }
-    if runtime_access_token is not None:
-        headers["x-access-token"] = runtime_access_token
-    if traffic_access_token is not None:
-        headers[TRAFFIC_ACCESS_TOKEN_HEADER] = traffic_access_token
-    return requests.get(f"{config.gateway_url}/", headers=headers, timeout=10)
-
-
-def gateway_request_eventually(
-    config, sandbox_id, runtime_access_token, traffic_access_token
-):
-    deadline = time.monotonic() + 30
-    response = None
-    while time.monotonic() < deadline:
-        response = gateway_request(
-            config, sandbox_id, runtime_access_token, traffic_access_token
-        )
-        if response.status_code not in (502, 503):
-            return response
-        time.sleep(0.5)
-    raise AssertionError(
-        f"gateway route was not ready for {sandbox_id}: "
-        f"{response.status_code if response is not None else 'no response'} "
-        f"{response.text if response is not None else ''}"
-    )
-
-
 def test_gateway_traffic_access_token_jwt(sandbox_context, config):
     """Verify route-selective JWT authentication and token validation."""
     first: Sandbox = sandbox_context.add(
@@ -214,6 +189,28 @@ def test_gateway_traffic_access_token_jwt(sandbox_context, config):
         public_wrong_token.text
     )
 
+    # Repeat the baseline column on a port served by the workload instead of
+    # agent-runtime. Nothing there authenticates, so the rejections below are
+    # unambiguously the gateway's and the acceptance proves end-to-end reach.
+    start_workload_server(public)
+    assert_workload_reached(
+        gateway_request_eventually(
+            config,
+            public.sandbox_id,
+            public_runtime_token,
+            None,
+            port=WORKLOAD_PORT,
+        )
+    )
+    public_workload_wrong = gateway_request(
+        config, public.sandbox_id, "wrong-runtime-token", None, port=WORKLOAD_PORT
+    )
+    assert public_workload_wrong.status_code == 401, public_workload_wrong.text
+    public_workload_absent = gateway_request(
+        config, public.sandbox_id, None, None, port=WORKLOAD_PORT
+    )
+    assert public_workload_absent.status_code == 401, public_workload_absent.text
+
     valid = gateway_request_eventually(
         config, first.sandbox_id, first_runtime_token, first_token
     )
@@ -226,6 +223,30 @@ def test_gateway_traffic_access_token_jwt(sandbox_context, config):
         config, first.sandbox_id, first_runtime_token, "not-a-jwt"
     )
     assert malformed.status_code == 403, malformed.text
+
+    # The opted-in column on the workload port. Reaching the sandbox to start the
+    # listener already requires a valid traffic token, so rebuild the client with
+    # one first.
+    start_workload_server(sandbox_client_with_traffic_jwt(first, first_token))
+    assert_workload_reached(
+        gateway_request_eventually(
+            config,
+            first.sandbox_id,
+            first_runtime_token,
+            first_token,
+            port=WORKLOAD_PORT,
+        )
+    )
+    first_workload_missing = gateway_request(
+        config, first.sandbox_id, first_runtime_token, None, port=WORKLOAD_PORT
+    )
+    assert first_workload_missing.status_code == 403, first_workload_missing.text
+    first_workload_malformed = gateway_request(
+        config, first.sandbox_id, first_runtime_token, "not-a-jwt", port=WORKLOAD_PORT
+    )
+    assert first_workload_malformed.status_code == 403, (
+        first_workload_malformed.text
+    )
 
     expired_token = issue_traffic_access_token(
         first.sandbox_id, get_sandbox_uid(first.sandbox_id), expired=True
@@ -287,9 +308,27 @@ def test_gateway_traffic_access_token_jwt_without_uuid_baseline(
     assert public_response.status_code in (200, 404), public_response.text
 
     # Every Sandbox carries a generated runtime access token, so a gateway that
-    # started validating it here would break clients that never sent one. Assert
-    # on the gateway's own rejection body because agent-runtime may still answer
-    # 401 for its own reasons.
+    # started validating it here would break clients that never sent one. Prove
+    # the request reaches the workload rather than merely missing one rejection
+    # body: on WORKLOAD_PORT nothing authenticates, so a 200 carrying the fixed
+    # body rules out both a revived UUID check (401) and JWT enforcement leaking
+    # onto a route that never opted in (403).
+    start_workload_server(public)
+    assert_workload_reached(
+        gateway_request_eventually(
+            config,
+            public.sandbox_id,
+            "wrong-runtime-token",
+            None,
+            port=WORKLOAD_PORT,
+        )
+    )
+    assert_workload_reached(
+        gateway_request(config, public.sandbox_id, None, None, port=WORKLOAD_PORT)
+    )
+
+    # The runtime port cannot distinguish the two layers, so it only gets the
+    # weaker check that the gateway's own rejection body is absent.
     wrong_runtime_token = gateway_request(
         config, public.sandbox_id, "wrong-runtime-token", None
     )
@@ -315,6 +354,39 @@ def test_gateway_traffic_access_token_jwt_without_uuid_baseline(
         config, protected.sandbox_id, protected_runtime_token, "not-a-jwt"
     )
     assert malformed.status_code == 403, malformed.text
+
+    start_workload_server(
+        sandbox_client_with_traffic_jwt(protected, protected_token)
+    )
+    assert_workload_reached(
+        gateway_request_eventually(
+            config,
+            protected.sandbox_id,
+            protected_runtime_token,
+            protected_token,
+            port=WORKLOAD_PORT,
+        )
+    )
+    protected_workload_missing = gateway_request(
+        config,
+        protected.sandbox_id,
+        protected_runtime_token,
+        None,
+        port=WORKLOAD_PORT,
+    )
+    assert protected_workload_missing.status_code == 403, (
+        protected_workload_missing.text
+    )
+    protected_workload_malformed = gateway_request(
+        config,
+        protected.sandbox_id,
+        protected_runtime_token,
+        "not-a-jwt",
+        port=WORKLOAD_PORT,
+    )
+    assert protected_workload_malformed.status_code == 403, (
+        protected_workload_malformed.text
+    )
 
 
 def test_gateway_traffic_access_token_jwt_with_e2b_sdk(sandbox_context, config):
