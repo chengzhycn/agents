@@ -955,8 +955,9 @@ func TestDecodeHeadersAccessTokenAuth(t *testing.T) {
 
 			assert.Equal(t, tt.expectedStatus, status)
 			assert.Equal(t, tt.expectLocalReply, mockCallbacks.decoderCallbacks.sendLocalReplyCalled)
-			// The traffic token is meaningless on a non-opted-in route, so JWT mode
-			// must strip it before the request reaches the workload.
+			// JWT mode owns the traffic token header and strips the one a client sent
+			// for a non-opted-in route. With the capability off the gateway does not
+			// read that header, so it reaches the workload untouched.
 			_, trafficTokenPresent := header.Get(DefaultTrafficAccessTokenHeader)
 			assert.Equal(t, !tt.enableJWTAuth, trafficTokenPresent)
 			if tt.expectLocalReply {

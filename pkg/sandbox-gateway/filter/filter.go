@@ -165,9 +165,13 @@ func (f *sandboxFilter) authenticate(header api.RequestHeaderMap, route sandboxr
 	// EnableAuth baseline below, exactly as it would be with JWT mode off. The two
 	// switches govern disjoint sets of routes, so enabling JWT neither exposes a
 	// route that UUID mode protected nor starts rejecting traffic that an
-	// unauthenticated deployment allowed. The traffic token is still stripped here
-	// because it carries no meaning for a non-opted-in route and must not leak into
-	// the workload.
+	// unauthenticated deployment allowed.
+	//
+	// Stripping the traffic token is scoped to JWT mode rather than unconditional:
+	// only a gateway that verifies these tokens owns the header, so only it can
+	// claim the one arriving here is meaningless. With the capability off the
+	// gateway never reads that header and forwards it untouched, so a workload must
+	// not treat it as gateway-asserted identity.
 	if f.config.EnableJWTAuth {
 		header.Del(f.config.GetTrafficAccessTokenHeader())
 	}
