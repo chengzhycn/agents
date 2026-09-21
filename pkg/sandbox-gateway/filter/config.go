@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	v3 "github.com/cncf/xds/go/xds/type/v3"
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -70,7 +71,8 @@ type Config struct {
 	// TrafficAccessTokenHeader is the request header carrying the traffic access JWT.
 	TrafficAccessTokenHeader string `json:"traffic-access-token-header,omitempty"`
 	// EnableRuntimeMTLS routes requests to the agent-runtime port through the mTLS upstream cluster.
-	EnableRuntimeMTLS bool `json:"enable-runtime-mtls,omitempty"`
+	EnableRuntimeMTLS bool   `json:"enable-runtime-mtls,omitempty"`
+	LogLevel          string `json:"log-level,omitempty"`
 	// EnableWakeOnTraffic enables wake-on-traffic for paused sandboxes.
 	// When true, the gateway will attempt to resume a paused sandbox by
 	// patching Spec.Paused=false when traffic arrives.
@@ -106,6 +108,13 @@ func (c *Config) Validate() error {
 	}
 	if strings.EqualFold(headerName, accessTokenHeader) {
 		return fmt.Errorf("traffic-access-token-header must differ from %s", accessTokenHeader)
+	}
+	if c.LogLevel != "" {
+		switch strings.ToLower(strings.TrimSpace(c.LogLevel)) {
+		case "debug", "info", "warn", "error":
+		default:
+			return fmt.Errorf("invalid log-level %q: want debug, info, warn, or error", c.LogLevel)
+		}
 	}
 	return nil
 }
@@ -194,11 +203,20 @@ func newFilterConfig(cfg *Config, jwtAuthManager JWTAuthManager) *FilterConfig {
 
 type ConfigParser struct {
 	jwtAuthManager JWTAuthManager
+	setLogLevel    func(string) error
+
+	logLevelMu         sync.Mutex
+	logLevelConfigured bool
+	logLevel           string
 }
 
-// NewConfigParser creates a parser wired to the process-wide JWT manager.
-func NewConfigParser(jwtAuthManager JWTAuthManager) *ConfigParser {
-	return &ConfigParser{jwtAuthManager: jwtAuthManager}
+// NewConfigParser creates a parser wired to process-wide gateway configuration.
+func NewConfigParser(jwtAuthManager JWTAuthManager, setLogLevel ...func(string) error) *ConfigParser {
+	parser := &ConfigParser{jwtAuthManager: jwtAuthManager}
+	if len(setLogLevel) > 0 {
+		parser.setLogLevel = setLogLevel[0]
+	}
+	return parser
 }
 
 func (p *ConfigParser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (interface{}, error) {
@@ -229,11 +247,15 @@ func (p *ConfigParser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler
 	_, jwtModeExplicit := values["enable-jwt-auth"]
 	_, tokenHeaderExplicit := values["traffic-access-token-header"]
 	_, runtimeMTLSExplicit := values["enable-runtime-mtls"]
+	_, logLevelExplicit := values["log-level"]
 	if callbacks == nil && jwtModeExplicit {
 		return nil, fmt.Errorf("enable-jwt-auth is process-wide and cannot be configured per route")
 	}
 	if callbacks == nil && runtimeMTLSExplicit {
 		return nil, fmt.Errorf("enable-runtime-mtls is process-wide and cannot be configured per route")
+	}
+	if callbacks == nil && logLevelExplicit {
+		return nil, fmt.Errorf("log-level is process-wide and cannot be configured per route")
 	}
 	configBytes, err := json.Marshal(values)
 	if err != nil {
@@ -255,10 +277,37 @@ func (p *ConfigParser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler
 		if err := p.configureJWT(cfg); err != nil {
 			return nil, err
 		}
+		if logLevelExplicit {
+			if err := p.configureLogLevel(cfg.LogLevel); err != nil {
+				return nil, err
+			}
+		}
 	}
 	parsed := newFilterConfig(cfg, p.jwtAuthManager)
 	parsed.trafficAccessTokenHeaderExplicit = tokenHeaderExplicit
 	return parsed, nil
+}
+
+func (p *ConfigParser) configureLogLevel(level string) error {
+	level = strings.ToLower(strings.TrimSpace(level))
+	p.logLevelMu.Lock()
+	defer p.logLevelMu.Unlock()
+
+	if p.logLevelConfigured {
+		if p.logLevel != level {
+			return fmt.Errorf("gateway log level is already configured as %q", p.logLevel)
+		}
+		return nil
+	}
+	if p.setLogLevel == nil {
+		return fmt.Errorf("gateway log level setter is not configured")
+	}
+	if err := p.setLogLevel(level); err != nil {
+		return fmt.Errorf("configure gateway log level: %w", err)
+	}
+	p.logLevel = level
+	p.logLevelConfigured = true
+	return nil
 }
 
 func (p *ConfigParser) configureJWT(cfg *Config) error {

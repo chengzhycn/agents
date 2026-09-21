@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -99,6 +100,7 @@ type Server struct {
 	client             client.Client
 	registry           *registry.Registry
 	readinessCheck     ReadinessCheck
+	memberlistLogger   *log.Logger
 }
 
 // NewServer creates a new peer server
@@ -130,6 +132,11 @@ func NewServer(
 		return nil
 	}
 	return server
+}
+
+func (s *Server) WithMemberlistLogger(logger *log.Logger) *Server {
+	s.memberlistLogger = logger
+	return s
 }
 
 // Start starts the HTTP server for handling refresh requests from peers
@@ -164,7 +171,13 @@ func (s *Server) Start(ctx context.Context) error {
 	namespace := os.Getenv(EnvNamespace)
 	labelSelector := os.Getenv(EnvLabelSelector)
 
-	s.peerManager = peers.NewMemberlistPeers(s.client, peers.NodePrefixSandboxGateway+nodeName, namespace, labelSelector)
+	s.peerManager = peers.NewMemberlistPeers(
+		s.client,
+		peers.NodePrefixSandboxGateway+nodeName,
+		namespace,
+		labelSelector,
+		peers.WithLogger(s.memberlistLogger),
+	)
 	setPeerManager(s.peerManager)
 
 	if err := s.peerManager.Start(ctx, s.memberlistBindPort); err != nil {
@@ -172,9 +185,10 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		klog.InfoS("Starting sandbox-gateway peer server", "address", s.httpServer.Addr)
+		logger := klog.FromContext(ctx)
+		logger.Info("Starting sandbox-gateway peer server", "address", s.httpServer.Addr)
 		if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			klog.ErrorS(err, "Peer server failed to start")
+			logger.Error(err, "Peer server failed to start")
 		}
 	}()
 

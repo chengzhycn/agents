@@ -104,6 +104,7 @@ data:
                               traffic-access-token-header: e2b-traffic-access-token
                               enable-wake-on-traffic: true
                               wake-timeout-seconds: 60
+                              log-level: info
                       - name: envoy.filters.http.router
                         typed_config:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

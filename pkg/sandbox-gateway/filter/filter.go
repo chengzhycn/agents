@@ -27,9 +27,9 @@ import (
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 
 	agentsv1alpha1 "github.com/openkruise/agents/api/v1alpha1"
+	"github.com/openkruise/agents/pkg/sandbox-gateway/logging"
 	"github.com/openkruise/agents/pkg/sandbox-gateway/registry"
 	"github.com/openkruise/agents/pkg/sandbox-gateway/wake"
 	"github.com/openkruise/agents/pkg/sandboxroute"
@@ -37,13 +37,7 @@ import (
 	"github.com/openkruise/agents/pkg/utils"
 )
 
-var logger *zap.Logger
-
-func init() {
-	config := zap.NewProductionConfig()
-	config.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
-	logger, _ = config.Build()
-}
+var logger = logging.Logger()
 
 const (
 	// accessTokenHeader is the HTTP header name that clients must set

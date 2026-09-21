@@ -19,6 +19,8 @@ package peers
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"sync/atomic"
@@ -55,6 +57,7 @@ type MemberlistPeers struct {
 	localName    string
 	peerSelector string
 	sysNs        string
+	logger       *log.Logger
 
 	list    *memberlist.Memberlist
 	config  *memberlist.Config
@@ -64,15 +67,32 @@ type MemberlistPeers struct {
 	stopCh  chan struct{}
 }
 
-// NewMemberlistPeers creates a new MemberlistPeers instance
-func NewMemberlistPeers(apiReader ctrlclient.Reader, nodeName string, namespace, peerSelector string) *MemberlistPeers {
-	return &MemberlistPeers{
+type MemberlistPeersOption func(*MemberlistPeers)
+
+func WithLogger(logger *log.Logger) MemberlistPeersOption {
+	return func(peers *MemberlistPeers) {
+		peers.logger = logger
+	}
+}
+
+func NewMemberlistPeers(apiReader ctrlclient.Reader, nodeName string, namespace, peerSelector string, opts ...MemberlistPeersOption) *MemberlistPeers {
+	peers := &MemberlistPeers{
 		apiReader:    apiReader,
 		sysNs:        namespace,
 		peerSelector: peerSelector,
 		localName:    nodeName,
+		logger:       log.New(io.Discard, "", 0),
 		stopCh:       make(chan struct{}),
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(peers)
+		}
+	}
+	if peers.logger == nil {
+		peers.logger = log.New(io.Discard, "", 0)
+	}
+	return peers
 }
 
 func FindPodIP() (string, error) {
@@ -167,9 +187,8 @@ func (m *MemberlistPeers) Start(ctx context.Context, bindPort int) error {
 		logCtx: logs.NewContext(),
 	}
 
-	// Disable logging from memberlist itself (we use klog)
 	config.LogOutput = nil
-	config.Logger = nil
+	config.Logger = m.logger
 
 	m.config = config
 

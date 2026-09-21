@@ -323,6 +323,93 @@ func TestConfigParserJWT(t *testing.T) {
 	}
 }
 
+func TestConfigParserProcessWideLogLevel(t *testing.T) {
+	tests := []struct {
+		name         string
+		values       map[string]any
+		callbacks    api.ConfigCallbackHandler
+		repeatLevel  string
+		setError     error
+		expectError  string
+		expectLevels []string
+	}{
+		{
+			name:         "listener config applies log level",
+			values:       map[string]any{"log-level": "debug"},
+			callbacks:    &fakeConfigCallbackHandler{},
+			expectLevels: []string{"debug"},
+		},
+		{
+			name:         "repeated listener config accepts the same level",
+			values:       map[string]any{"log-level": "DEBUG"},
+			callbacks:    &fakeConfigCallbackHandler{},
+			repeatLevel:  "debug",
+			expectLevels: []string{"debug"},
+		},
+		{
+			name:         "repeated listener config rejects a different level",
+			values:       map[string]any{"log-level": "debug"},
+			callbacks:    &fakeConfigCallbackHandler{},
+			repeatLevel:  "warn",
+			expectError:  "already configured",
+			expectLevels: []string{"debug"},
+		},
+		{
+			name:        "listener config rejects invalid log level",
+			values:      map[string]any{"log-level": "trace"},
+			callbacks:   &fakeConfigCallbackHandler{},
+			expectError: "invalid log-level",
+		},
+		{
+			name:         "listener config reports setter error",
+			values:       map[string]any{"log-level": "debug"},
+			callbacks:    &fakeConfigCallbackHandler{},
+			setError:     errors.New("set level failed"),
+			expectError:  "set level failed",
+			expectLevels: []string{"debug"},
+		},
+		{
+			name:        "route config rejects log level",
+			values:      map[string]any{"log-level": "debug"},
+			expectError: "cannot be configured per route",
+		},
+		{
+			name:        "route config rejects explicit empty log level",
+			values:      map[string]any{"log-level": ""},
+			expectError: "cannot be configured per route",
+		},
+		{
+			name:      "config without log level does not update process level",
+			values:    map[string]any{"enable-auth": true},
+			callbacks: &fakeConfigCallbackHandler{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var levels []string
+			parser := NewConfigParser(&fakeJWTAuthManager{}, func(level string) error {
+				levels = append(levels, level)
+				return tt.setError
+			})
+
+			result, err := parser.Parse(typedFilterConfig(t, tt.values), tt.callbacks)
+			if err == nil && tt.repeatLevel != "" {
+				_, err = parser.Parse(typedFilterConfig(t, map[string]any{"log-level": tt.repeatLevel}), tt.callbacks)
+			}
+			if tt.expectError != "" {
+				require.ErrorContains(t, err, tt.expectError)
+			} else {
+				require.NoError(t, err)
+				if expected, ok := tt.values["log-level"]; ok {
+					assert.Equal(t, expected, result.(*FilterConfig).LogLevel)
+				}
+			}
+			assert.Equal(t, tt.expectLevels, levels)
+		})
+	}
+}
+
 func TestConfigParserProcessWideJWTMode(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -584,6 +671,7 @@ func TestConfigParserMerge(t *testing.T) {
 		wantPortHeader    string
 		wantDefaultPort   string
 		wantEnableAuth    bool
+		wantLogLevel      string
 	}{
 		{
 			name:              "child overrides all parent fields",
@@ -597,13 +685,14 @@ func TestConfigParserMerge(t *testing.T) {
 		},
 		{
 			name:              "empty child preserves parent",
-			parent:            &Config{SandboxHeaderName: "parent-sbx", HostHeaderName: "parent-host", SandboxPortHeader: "parent-port", DefaultPort: "1234", EnableAuth: true},
+			parent:            &Config{SandboxHeaderName: "parent-sbx", HostHeaderName: "parent-host", SandboxPortHeader: "parent-port", DefaultPort: "1234", EnableAuth: true, LogLevel: "warn"},
 			child:             &Config{},
 			wantSandboxHeader: "parent-sbx",
 			wantHostHeader:    "parent-host",
 			wantPortHeader:    "parent-port",
 			wantDefaultPort:   "1234",
 			wantEnableAuth:    true,
+			wantLogLevel:      "warn",
 		},
 		{
 			name:              "partial child override",
@@ -661,6 +750,9 @@ func TestConfigParserMerge(t *testing.T) {
 			}
 			if fc.EnableAuth != tt.wantEnableAuth {
 				t.Errorf("EnableAuth = %v, want %v", fc.EnableAuth, tt.wantEnableAuth)
+			}
+			if fc.LogLevel != tt.wantLogLevel {
+				t.Errorf("LogLevel = %q, want %q", fc.LogLevel, tt.wantLogLevel)
 			}
 			if fc.Adapter == nil {
 				t.Error("Merge() returned FilterConfig with nil Adapter")

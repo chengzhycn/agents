@@ -18,6 +18,8 @@ package peers
 
 import (
 	"context"
+	"io"
+	"log"
 	"testing"
 	"time"
 
@@ -54,6 +56,33 @@ func TestMemberlistPeers_Start_Stop(t *testing.T) {
 	err = peer.Stop()
 	require.NoError(t, err)
 	assert.False(t, peer.started.Load())
+}
+
+func TestNewMemberlistPeersLogger(t *testing.T) {
+	fc := fake.NewClientBuilder().WithStatusSubresource(&v1.Pod{}).Build()
+	custom := log.New(io.Discard, "custom", 0)
+
+	tests := []struct {
+		name       string
+		options    []MemberlistPeersOption
+		wantLogger *log.Logger
+	}{
+		{name: "default logger discards output"},
+		{name: "custom logger", options: []MemberlistPeersOption{WithLogger(custom)}, wantLogger: custom},
+		{name: "nil custom logger discards output", options: []MemberlistPeersOption{WithLogger(nil)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			peer := NewMemberlistPeers(fc, "test-node", Namespace, LabelSelector, tt.options...)
+			require.NotNil(t, peer.logger)
+			if tt.wantLogger != nil {
+				assert.Same(t, tt.wantLogger, peer.logger)
+				return
+			}
+			assert.Equal(t, io.Discard, peer.logger.Writer())
+		})
+	}
 }
 
 // TestMemberlistPeers_Start_Twice tests that starting twice should return an error

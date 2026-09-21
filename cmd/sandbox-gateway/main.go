@@ -20,34 +20,35 @@ import (
 	"context"
 	"os"
 
-	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	envoyhttp "github.com/envoyproxy/envoy/contrib/golang/filters/http/source/go/pkg/http"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	agentsv1alpha1 "github.com/openkruise/agents/api/v1alpha1"
 	"github.com/openkruise/agents/pkg/sandbox-gateway/controller"
 	"github.com/openkruise/agents/pkg/sandbox-gateway/filter"
 	"github.com/openkruise/agents/pkg/sandbox-gateway/jwtauth"
+	"github.com/openkruise/agents/pkg/sandbox-gateway/logging"
 	"github.com/openkruise/agents/pkg/sandbox-gateway/registry"
 	peerserver "github.com/openkruise/agents/pkg/sandbox-gateway/server"
 	"github.com/openkruise/agents/pkg/sandboxroute/refresh"
 )
 
 func init() {
-	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
+	if err := logging.Setup(); err != nil {
+		logging.Logr().Error(err, "failed to configure sandbox gateway logging")
+		os.Exit(1)
+	}
 
 	jwtAuthManager := jwtauth.NewManager()
 
 	envoyhttp.RegisterHttpFilterFactoryAndConfigParser(
 		"sandbox-gateway",
 		filter.FilterFactory,
-		filter.NewConfigParser(jwtAuthManager),
+		filter.NewConfigParser(jwtAuthManager, logging.SetLevel),
 	)
 	routeRegistry := registry.GetRegistry()
 
@@ -56,7 +57,7 @@ func init() {
 			Registry:       routeRegistry,
 			JWTAuthManager: jwtAuthManager,
 		}); err != nil {
-			api.LogErrorf("sandbox controller manager exited with error: %v", err)
+			logging.Logr().Error(err, "sandbox controller manager exited with error")
 			os.Exit(1)
 		}
 	}()
@@ -68,7 +69,7 @@ func init() {
 		// Get Kubernetes config
 		cfg, err := rest.InClusterConfig()
 		if err != nil {
-			api.LogErrorf("failed to get in-cluster config: %v", err)
+			logging.Logr().Error(err, "failed to get in-cluster config")
 			os.Exit(1)
 		}
 
@@ -78,7 +79,7 @@ func init() {
 		utilruntime.Must(agentsv1alpha1.AddToScheme(scheme))
 		client, err := ctrlclient.New(cfg, ctrlclient.Options{Scheme: scheme})
 		if err != nil {
-			api.LogErrorf("failed to create controller-runtime client: %v", err)
+			logging.Logr().Error(err, "failed to create controller-runtime client")
 			os.Exit(1)
 		}
 
@@ -87,9 +88,9 @@ func init() {
 			routeRegistry,
 			refresh.DefaultPort,
 			jwtAuthManager.Ready,
-		)
+		).WithMemberlistLogger(logging.MemberlistLogger())
 		if err := peerServer.Start(ctx); err != nil {
-			api.LogErrorf("failed to start peer server: %v", err)
+			logging.Logr().Error(err, "failed to start peer server")
 			os.Exit(1)
 		}
 	}()
