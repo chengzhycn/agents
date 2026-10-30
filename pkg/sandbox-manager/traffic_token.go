@@ -23,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openkruise/agents/api/v1alpha1"
 	managererrors "github.com/openkruise/agents/pkg/sandbox-manager/errors"
 	"github.com/openkruise/agents/pkg/sandbox-manager/infra"
 	"k8s.io/klog/v2"
@@ -38,9 +37,10 @@ var errTrafficTokenIssuerPanic = errors.New("traffic access token issuer panicke
 // RefreshTrafficAccessTokenOptions identifies the caller and Sandbox for an
 // explicit traffic-token refresh.
 type RefreshTrafficAccessTokenOptions struct {
-	Namespace string
-	SandboxID string
-	User      string
+	Namespace      string
+	SandboxID      string
+	User           string
+	ServiceAccount *ServiceAccountIdentity
 }
 
 // RefreshTrafficAccessToken issues a new token without mutating the Sandbox.
@@ -49,31 +49,15 @@ func (m *SandboxManager) RefreshTrafficAccessToken(ctx context.Context, opts Ref
 }
 
 func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts RefreshTrafficAccessTokenOptions) (infra.TrafficAccessToken, error) {
-	if opts.User == "" {
-		return infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorBadRequest, "user is required")
-	}
-	if opts.SandboxID == "" {
-		return infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorBadRequest, "sandbox ID is required")
-	}
-
-	sandbox, err := m.GetSandbox(ctx, opts.User, nil, infra.GetSandboxOptions{
-		Namespace: opts.Namespace,
-		SandboxID: opts.SandboxID,
-	})
+	snapshot, err := m.authorizeTrafficTokenRefresh(ctx, opts)
 	if err != nil {
-		return infra.TrafficAccessToken{}, err
-	}
-	if err := validateTrafficTokenSandbox(sandbox, opts.User); err != nil {
 		return infra.TrafficAccessToken{}, err
 	}
 	if m.trafficTokenSingleflight == nil {
 		return infra.TrafficAccessToken{}, managererrors.NewError(managererrors.ErrorInternal, "traffic access token singleflight is not configured")
 	}
 
-	flightKey := string(sandbox.GetUID())
-	if flightKey == "" {
-		flightKey = opts.SandboxID
-	}
+	flightKey := snapshot.flightKey()
 	flight, leader := m.trafficTokenSingleflight.acquire(flightKey)
 	if leader {
 		// The result is shared with every waiter, so one HTTP client's
@@ -106,7 +90,7 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 					SandboxID:    opts.SandboxID,
 					TokenOptions: m.trafficTokenOptions,
 					Validate: func(sandbox infra.Sandbox) error {
-						return validateTrafficTokenSandbox(sandbox, opts.User)
+						return validateTrafficTokenSnapshot(sandbox, snapshot)
 					},
 				})
 				if issueErr != nil && managererrors.GetErrCode(issueErr) == managererrors.ErrorUnknown {
@@ -131,6 +115,9 @@ func (m *SandboxManager) issueTrafficAccessToken(ctx context.Context, opts Refre
 	case <-flight.done:
 		if flight.err != nil {
 			return infra.TrafficAccessToken{}, flight.err
+		}
+		if err := m.revalidateTrafficTokenSnapshot(ctx, snapshot); err != nil {
+			return infra.TrafficAccessToken{}, err
 		}
 		return flight.result, nil
 	}
@@ -253,24 +240,6 @@ func (l *trafficTokenIssueLifecycle) stop(ctx context.Context) error {
 	case <-done:
 		return nil
 	}
-}
-
-func validateTrafficTokenSandbox(sandbox infra.Sandbox, user string) error {
-	route, err := sandbox.GetRoute()
-	if err != nil {
-		return managererrors.NewError(managererrors.ErrorUnavailable, "failed to resolve sandbox route: %v", err)
-	}
-	if route.Owner != user {
-		return managererrors.NewError(managererrors.ErrorNotAllowed, "sandbox %s is not owned", sandbox.GetSandboxID())
-	}
-	state, reason := sandbox.GetState()
-	if state != v1alpha1.SandboxStateRunning && state != v1alpha1.SandboxStatePaused {
-		return managererrors.NewError(managererrors.ErrorConflict, "sandbox %s cannot refresh traffic access token in state %s (%s)", sandbox.GetSandboxID(), state, reason)
-	}
-	if !route.RequireTrafficAuth {
-		return managererrors.NewError(managererrors.ErrorConflict, "sandbox %s does not enable traffic JWT authentication", sandbox.GetSandboxID())
-	}
-	return nil
 }
 
 type trafficTokenFlight struct {

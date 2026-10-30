@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	authenticationclient "k8s.io/client-go/kubernetes/typed/authentication/v1"
 	"k8s.io/klog/v2"
 
 	"github.com/openkruise/agents/pkg/agent-runtime/storages"
@@ -67,6 +68,7 @@ type Controller struct {
 	adapter         *adapters.E2BAdapter
 	manager         *sandboxmanager.SandboxManager
 	keys            keys.KeyStorage
+	tokenReviewer   authenticationclient.TokenReviewInterface
 }
 
 // ControllerOptions carries everything NewController needs. Passing a struct
@@ -137,6 +139,13 @@ func (sc *Controller) Init() error {
 	ctx := logs.NewContext()
 	log := klog.FromContext(ctx)
 	log.Info("init controller")
+	if sc.mgrOpts.RestConfig != nil {
+		authenticationClient, err := authenticationclient.NewForConfig(sc.mgrOpts.RestConfig)
+		if err != nil {
+			return fmt.Errorf("create TokenReview client: %w", err)
+		}
+		sc.tokenReviewer = authenticationClient.TokenReviews()
+	}
 
 	sandboxManager, err := sandboxmanager.NewSandboxManagerBuilder(sc.mgrOpts).
 		WithSandboxInfra().

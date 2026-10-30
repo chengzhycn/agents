@@ -28,17 +28,21 @@ import (
 
 // RefreshTrafficAccessToken re-signs the current caller's Sandbox traffic JWT.
 func (sc *Controller) RefreshTrafficAccessToken(r *http.Request) (web.ApiResponse[*models.TrafficAccessToken], *web.ApiError) {
-	user := GetUserFromContext(r.Context())
-	if user == nil {
-		return web.ApiResponse[*models.TrafficAccessToken]{}, trafficTokenAPIError(
-			managererrors.NewError(managererrors.ErrorNotAllowed, "authenticated user is required"),
-		)
+	opts := sandboxmanager.RefreshTrafficAccessTokenOptions{SandboxID: r.PathValue("sandboxID")}
+	if principal, ok := r.Context().Value(trafficTokenServiceAccountContextKey).(trafficTokenServiceAccount); ok {
+		opts.Namespace = principal.namespace
+		opts.ServiceAccount = &principal.identity
+	} else {
+		user := GetUserFromContext(r.Context())
+		if user == nil {
+			return web.ApiResponse[*models.TrafficAccessToken]{}, trafficTokenAPIError(
+				managererrors.NewError(managererrors.ErrorNotAllowed, "authenticated user is required"),
+			)
+		}
+		opts.Namespace = sc.getNamespaceOfUser(user)
+		opts.User = user.ID.String()
 	}
-	result, err := sc.manager.RefreshTrafficAccessToken(r.Context(), sandboxmanager.RefreshTrafficAccessTokenOptions{
-		Namespace: sc.getNamespaceOfUser(user),
-		SandboxID: r.PathValue("sandboxID"),
-		User:      user.ID.String(),
-	})
+	result, err := sc.manager.RefreshTrafficAccessToken(r.Context(), opts)
 	if err != nil {
 		return web.ApiResponse[*models.TrafficAccessToken]{}, trafficTokenAPIError(err)
 	}

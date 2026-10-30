@@ -60,7 +60,7 @@ func (sc *Controller) registerRoutes() {
 	// ConnectSandboxV2 accepts an omitted body and applies the 300-second default.
 	RegisterE2BRoute(sc.mux, http.MethodPost, "/sandboxes/{sandboxID}/connect", sc.ConnectSandbox, traceOperation(traceOpResume), sc.CheckApiKey)
 	RegisterE2BRoute(sc.mux, http.MethodPost, "/v2/sandboxes/{sandboxID}/connect", sc.ConnectSandboxV2, traceOperation(traceOpResume), sc.CheckApiKey)
-	web.RegisterRoute(sc.mux, http.MethodPost, adapters.CustomPrefix+"/api/sandboxes/{sandboxID}/traffic-access-token", sc.RefreshTrafficAccessToken, sc.CheckApiKey)
+	web.RegisterRoute(sc.mux, http.MethodPost, adapters.CustomPrefix+"/api/sandboxes/{sandboxID}/traffic-access-token", sc.RefreshTrafficAccessToken, sc.CheckTrafficTokenCredentials)
 	RegisterE2BRoute(sc.mux, http.MethodPost, "/sandboxes/{sandboxID}/timeout", sc.SetSandboxTimeout, sc.CheckApiKey)
 	RegisterE2BRoute(sc.mux, http.MethodPost, "/sandboxes/{sandboxID}/snapshots", sc.CreateSnapshot, sc.CheckApiKey)
 	RegisterE2BRoute(sc.mux, http.MethodGet, "/snapshots", sc.ListSnapshots, sc.CheckApiKey)
@@ -220,9 +220,10 @@ func (sc *Controller) CheckApiKey(ctx context.Context, r *http.Request) (context
 type contextKey string
 
 const (
-	userContextKey             contextKey = "user"
-	newAPIKeyRequestContextKey contextKey = "newAPIKeyRequest"
-	targetAPIKeyContextKey     contextKey = "targetAPIKey"
+	userContextKey                       contextKey = "user"
+	trafficTokenServiceAccountContextKey contextKey = "trafficTokenServiceAccount"
+	newAPIKeyRequestContextKey           contextKey = "newAPIKeyRequest"
+	targetAPIKeyContextKey               contextKey = "targetAPIKey"
 )
 
 func (sc *Controller) CheckCreateAPIKeyPermission(ctx context.Context, r *http.Request) (context.Context, *web.ApiError) {
