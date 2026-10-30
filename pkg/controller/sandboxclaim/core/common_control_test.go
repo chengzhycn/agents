@@ -39,6 +39,7 @@ import (
 	"github.com/openkruise/agents/pkg/autopause"
 	"github.com/openkruise/agents/pkg/cache"
 	"github.com/openkruise/agents/pkg/cache/cachetest"
+	"github.com/openkruise/agents/pkg/claimidentity"
 	"github.com/openkruise/agents/pkg/features"
 	"github.com/openkruise/agents/pkg/sandbox-manager/consts"
 	"github.com/openkruise/agents/pkg/sandbox-manager/infra"
@@ -1416,6 +1417,48 @@ func TestCommonControl_buildClaimOptions(t *testing.T) {
 			},
 		},
 		{
+			name: "trusted claim binding replaces stale sandbox binding",
+			claim: &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-claim",
+					Namespace: "default",
+					UID:       "test-uid-binding",
+					Annotations: map[string]string{
+						claimidentity.UsernameAnnotation: "system:serviceaccount:tenant-a:runtime",
+						claimidentity.UIDAnnotation:      "uid-a",
+					},
+				},
+				Spec: agentsv1alpha1.SandboxClaimSpec{TemplateName: "test-template"},
+			},
+			sandboxSet: &agentsv1alpha1.SandboxSet{ObjectMeta: metav1.ObjectMeta{Name: "test-template", Namespace: "default"}},
+			validate: func(t *testing.T, opts infra.ClaimSandboxOptions) {
+				mockSandbox := &sandboxcr.Sandbox{Sandbox: &agentsv1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+					claimidentity.UsernameAnnotation: "system:serviceaccount:stale:runtime",
+					claimidentity.UIDAnnotation:      "stale-uid",
+				}}}}
+				require.NoError(t, opts.Modifier(mockSandbox))
+				assert.Equal(t, "system:serviceaccount:tenant-a:runtime", mockSandbox.Annotations[claimidentity.UsernameAnnotation])
+				assert.Equal(t, "uid-a", mockSandbox.Annotations[claimidentity.UIDAnnotation])
+			},
+		},
+		{
+			name: "legacy unbound claim removes stale sandbox binding",
+			claim: &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-claim", Namespace: "default", UID: "test-uid-legacy"},
+				Spec:       agentsv1alpha1.SandboxClaimSpec{TemplateName: "test-template"},
+			},
+			sandboxSet: &agentsv1alpha1.SandboxSet{ObjectMeta: metav1.ObjectMeta{Name: "test-template", Namespace: "default"}},
+			validate: func(t *testing.T, opts infra.ClaimSandboxOptions) {
+				mockSandbox := &sandboxcr.Sandbox{Sandbox: &agentsv1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+					claimidentity.UsernameAnnotation: "system:serviceaccount:stale:runtime",
+					claimidentity.UIDAnnotation:      "stale-uid",
+				}}}}
+				require.NoError(t, opts.Modifier(mockSandbox))
+				assert.NotContains(t, mockSandbox.Annotations, claimidentity.UsernameAnnotation)
+				assert.NotContains(t, mockSandbox.Annotations, claimidentity.UIDAnnotation)
+			},
+		},
+		{
 			name: "claim with shutdownTime",
 			claim: &agentsv1alpha1.SandboxClaim{
 				ObjectMeta: metav1.ObjectMeta{
@@ -2436,6 +2479,32 @@ func TestCommonControl_buildClaimOptions(t *testing.T) {
 				Spec: agentsv1alpha1.SandboxClaimSpec{
 					TemplateName: "pool",
 					Annotations:  map[string]string{agentsv1alpha1.AnnotationSandboxID: ""},
+				},
+			},
+			sandboxSet:          &agentsv1alpha1.SandboxSet{ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "default"}},
+			expectError:         true,
+			expectErrorContains: "is reserved and cannot be set by SandboxClaim",
+		},
+		{
+			name: "reserved service account username annotation is rejected",
+			claim: &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: "default"},
+				Spec: agentsv1alpha1.SandboxClaimSpec{
+					TemplateName: "pool",
+					Annotations:  map[string]string{claimidentity.UsernameAnnotation: "system:serviceaccount:tenant-a:runtime"},
+				},
+			},
+			sandboxSet:          &agentsv1alpha1.SandboxSet{ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "default"}},
+			expectError:         true,
+			expectErrorContains: "is reserved and cannot be set by SandboxClaim",
+		},
+		{
+			name: "reserved service account uid annotation is rejected",
+			claim: &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: "default"},
+				Spec: agentsv1alpha1.SandboxClaimSpec{
+					TemplateName: "pool",
+					Annotations:  map[string]string{claimidentity.UIDAnnotation: "uid-a"},
 				},
 			},
 			sandboxSet:          &agentsv1alpha1.SandboxSet{ObjectMeta: metav1.ObjectMeta{Name: "pool", Namespace: "default"}},

@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	agentsv1alpha1 "github.com/openkruise/agents/api/v1alpha1"
+	"github.com/openkruise/agents/pkg/claimidentity"
 	"github.com/openkruise/agents/pkg/identity"
 	"github.com/openkruise/agents/pkg/utils"
 	agentsruntime "github.com/openkruise/agents/pkg/utils/runtime"
@@ -1179,6 +1180,8 @@ func TestResetSandboxForPool(t *testing.T) {
 						agentsv1alpha1.AnnotationCleanupRetainOnFailure: "true",
 						agentsv1alpha1.AnnotationLock:                   "some-lock",
 						agentsv1alpha1.AnnotationOwner:                  "some-user",
+						claimidentity.UsernameAnnotation:                "system:serviceaccount:tenant-a:runtime",
+						claimidentity.UIDAnnotation:                     "uid-a",
 						agentsv1alpha1.AnnotationClaimTime:              "2026-06-17T00:00:00Z",
 						agentsv1alpha1.AnnotationInitRuntimeRequest:     "{}",
 						agentsv1alpha1.AnnotationRuntimeAccessToken:     "token",
@@ -1436,6 +1439,8 @@ func TestResetSandboxForPool(t *testing.T) {
 			assert.Empty(t, updated.Annotations[agentsv1alpha1.AnnotationCleanupRetainOnFailure])
 			assert.Empty(t, updated.Annotations[agentsv1alpha1.AnnotationLock])
 			assert.Empty(t, updated.Annotations[agentsv1alpha1.AnnotationOwner])
+			assert.Empty(t, updated.Annotations[claimidentity.UsernameAnnotation])
+			assert.Empty(t, updated.Annotations[claimidentity.UIDAnnotation])
 			assert.Empty(t, updated.Annotations[agentsv1alpha1.AnnotationClaimTime])
 			assert.Empty(t, updated.Annotations[agentsv1alpha1.AnnotationInitRuntimeRequest])
 			assert.Empty(t, updated.Annotations[agentsv1alpha1.AnnotationRuntimeAccessToken])

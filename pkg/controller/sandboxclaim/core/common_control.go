@@ -37,6 +37,7 @@ import (
 	"github.com/openkruise/agents/pkg/agent-runtime/storages"
 	"github.com/openkruise/agents/pkg/autopause"
 	"github.com/openkruise/agents/pkg/cache"
+	"github.com/openkruise/agents/pkg/claimidentity"
 	"github.com/openkruise/agents/pkg/controller/sandboxset"
 	"github.com/openkruise/agents/pkg/features"
 	claimengine "github.com/openkruise/agents/pkg/lifecycle/claim"
@@ -312,6 +313,11 @@ func validateClaimReservedIdentityKeys(claim *agentsv1alpha1.SandboxClaim) error
 	if _, exists := claim.Spec.Annotations[agentsv1alpha1.AnnotationSandboxID]; exists {
 		return fmt.Errorf("%w: annotation %q is reserved and cannot be set by SandboxClaim", ErrInvalidClaimSpec, agentsv1alpha1.AnnotationSandboxID)
 	}
+	for _, key := range []string{claimidentity.UsernameAnnotation, claimidentity.UIDAnnotation} {
+		if _, exists := claim.Spec.Annotations[key]; exists {
+			return fmt.Errorf("%w: annotation %q is reserved and cannot be set by SandboxClaim", ErrInvalidClaimSpec, key)
+		}
+	}
 	return nil
 }
 
@@ -358,9 +364,25 @@ func (c *commonControl) buildClaimOptions(ctx context.Context, claim *agentsv1al
 		ProbeUpdatesEnabled: utilfeature.DefaultFeatureGate.Enabled(features.AutoPauseControllerGate) &&
 			utilfeature.DefaultFeatureGate.Enabled(features.KruiseIntegrationGate),
 		Modifier: func(sbx infra.Sandbox) error {
+			annotations := sbx.GetAnnotations()
+			if annotations != nil {
+				delete(annotations, claimidentity.UsernameAnnotation)
+				delete(annotations, claimidentity.UIDAnnotation)
+			}
+			username := claim.Annotations[claimidentity.UsernameAnnotation]
+			uid := claim.Annotations[claimidentity.UIDAnnotation]
+			if claimidentity.IsServiceAccountUsername(username) && uid != "" {
+				if annotations == nil {
+					annotations = make(map[string]string)
+				}
+				annotations[claimidentity.UsernameAnnotation] = username
+				annotations[claimidentity.UIDAnnotation] = uid
+			}
+			sbx.SetAnnotations(annotations)
+
 			// propagate annotations to sandbox
 			if len(claim.Spec.Annotations) > 0 {
-				annotations := sbx.GetAnnotations()
+				annotations = sbx.GetAnnotations()
 				if annotations == nil {
 					annotations = make(map[string]string)
 				}

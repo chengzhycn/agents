@@ -31,6 +31,8 @@ import (
 
 	"github.com/openkruise/agents/pkg/webhook/pod"
 	"github.com/openkruise/agents/pkg/webhook/poolautoscaler"
+	"github.com/openkruise/agents/pkg/webhook/sandbox"
+	"github.com/openkruise/agents/pkg/webhook/sandboxclaim"
 	"github.com/openkruise/agents/pkg/webhook/sandboxset"
 	"github.com/openkruise/agents/pkg/webhook/sandboxtemplate"
 	"github.com/openkruise/agents/pkg/webhook/sandboxupdateops"
@@ -46,6 +48,8 @@ var (
 )
 
 func init() {
+	HandlerGetters = append(HandlerGetters, sandbox.GetHandlerGetters()...)
+	HandlerGetters = append(HandlerGetters, sandboxclaim.GetHandlerGetters()...)
 	HandlerGetters = append(HandlerGetters, sandboxset.GetHandlerGetters()...)
 	HandlerGetters = append(HandlerGetters, sandboxupdateops.GetHandlerGetters()...)
 	HandlerGetters = append(HandlerGetters, sandboxtemplate.GetHandlerGetters()...)

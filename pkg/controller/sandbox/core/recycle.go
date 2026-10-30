@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agentsv1alpha1 "github.com/openkruise/agents/api/v1alpha1"
+	"github.com/openkruise/agents/pkg/claimidentity"
 	"github.com/openkruise/agents/pkg/identity"
 	"github.com/openkruise/agents/pkg/utils"
 	agentsruntime "github.com/openkruise/agents/pkg/utils/runtime"
@@ -443,6 +444,8 @@ func (r *SandboxRecycleControl) resetSandboxForPool(ctx context.Context, box *ag
 	for _, ann := range agentsv1alpha1.AnnotationsClearedOnRecycle {
 		delete(box.Annotations, ann)
 	}
+	delete(box.Annotations, claimidentity.UsernameAnnotation)
+	delete(box.Annotations, claimidentity.UIDAnnotation)
 	// Annotations from other packages not included in AnnotationsClearedOnRecycle:
 	delete(box.Annotations, identity.AgentKeyTokenRefreshStatus)
 
